@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plane, Satellite, Sun, AlertTriangle, Camera,
   CloudLightning, Ship, Network, Database, Ghost,
-  Flame, Tv, Radio, Mountain, Anchor, Megaphone, SlidersHorizontal
+  Flame, Tv, Radio, Mountain, Anchor, Megaphone, SlidersHorizontal,
+  MapPinned, TrainFront, Gauge,
 } from 'lucide-react';
 import StyleStudio from './StyleStudio';
 import { TERRAIN_MIN_ZOOM, type TerrainStatus } from '@/lib/map-terrain';
@@ -24,8 +25,10 @@ interface LayerPanelProps {
   onTerrainRetry?: () => void;
   onTerrainFocus?: () => void;
   on3DModeSelected?: () => void;
-  /** False while the splash is up; the rail slides in when it turns true. */
+  /** When false, the rail stays off-screen (intro gate). Default true. */
   revealed?: boolean;
+  /** True while a layer-group flyout is open (covers the map bottom-left). */
+  onFlyoutChange?: (open: boolean) => void;
 }
 
 interface LayerDef {
@@ -57,8 +60,8 @@ const LAYER_GROUPS: LayerGroupDef[] = [
     layers: [
       { key: 'sdk_sea', label: 'Maritime Lines', dataKey: 'sdk_entities' },
       { key: 'live_clouds', label: 'Live Clouds', description: 'NOAA satellites · lit in 3D · hourly', dataKey: '' },
-      { key: 'wind', label: 'Wind', description: 'NOAA GFS · surface wind · 6-hourly', dataKey: '' },
-      { key: 'wind_controls', label: 'Time Controls', description: '3 days back · 5 ahead', dataKey: '', parent: 'wind' },
+      { key: 'wind', label: 'Wind', description: 'Animated surface wind · Open-Meteo', dataKey: '' },
+      { key: 'night_lights', label: 'Night Lights', description: 'VIIRS Black Marble · NASA GIBS', dataKey: '' },
       { key: 'rain', label: 'Rain', description: 'RainViewer radar · every 10 min', dataKey: '' },
       { key: 'rain_controls', label: 'Time Controls', description: 'Last 2 hours · loop', dataKey: '', parent: 'rain' },
     ],
@@ -72,6 +75,8 @@ const LAYER_GROUPS: LayerGroupDef[] = [
       { key: 'private', label: 'Private', dataKey: 'private_flights' },
       { key: 'jets', label: 'Private Jets', dataKey: 'private_jets' },
       { key: 'military', label: 'Military', dataKey: 'military_flights' },
+      { key: 'gps_jam', label: 'GPS Jam', description: 'ADS-B accuracy · gpsjam.org', dataKey: '' },
+      { key: 'gps_jam_controls', label: 'Time Controls', description: 'Pick day · daily CSV', dataKey: '', parent: 'gps_jam' },
     ],
   },
   {
@@ -79,7 +84,15 @@ const LAYER_GROUPS: LayerGroupDef[] = [
     fullLabel: 'MARITIME',
     icon: Ship,
     layers: [
-      { key: 'maritime', label: 'Maritime / Naval', dataKey: 'maritime_ships,maritime_ports,maritime_chokepoints' },
+      { key: 'ais_cargo', label: 'Cargo', dataKey: 'maritime_ships', description: 'AIS type 70–79' },
+      { key: 'ais_tanker', label: 'Tanker', dataKey: 'maritime_ships', description: 'AIS type 80–89' },
+      { key: 'ais_passenger', label: 'Passenger', dataKey: 'maritime_ships', description: 'AIS type 60–69' },
+      { key: 'ais_military', label: 'Military', dataKey: 'maritime_ships', description: 'AIS type 35' },
+      { key: 'ais_fishing', label: 'Fishing', dataKey: 'maritime_ships', description: 'AIS type 30' },
+      { key: 'ais_pleasure', label: 'Pleasure / Yacht', dataKey: 'maritime_ships', description: 'Pleasure · sailing' },
+      { key: 'ais_special', label: 'Special / HSC', dataKey: 'maritime_ships', description: 'Tug · HSC · special craft' },
+      { key: 'ais_other', label: 'Other', dataKey: 'maritime_ships', description: 'AIS type 90+ / unknown' },
+      { key: 'maritime_infra', label: 'Ports & chokepoints', dataKey: 'maritime_ports,maritime_chokepoints', description: 'Ports · chokepoints' },
     ],
   },
   {
@@ -113,6 +126,8 @@ const LAYER_GROUPS: LayerGroupDef[] = [
       { key: 'earthquakes', label: 'Earthquakes', dataKey: 'earthquakes' },
       { key: 'fires', label: 'Active Fires', dataKey: 'fires' },
       { key: 'weather', label: 'Severe Weather', dataKey: 'weather_events' },
+      { key: 'balloons', label: 'Balloons / Sondes', dataKey: 'balloons', description: 'SondeHub radiosondes' },
+      { key: 'radiation', label: 'Radiation Monitors', dataKey: 'radiation', description: 'Safecast' },
     ],
   },
   {
@@ -124,6 +139,7 @@ const LAYER_GROUPS: LayerGroupDef[] = [
       { key: 'global_incidents', label: 'Global Incidents', dataKey: 'gdelt' },
       { key: 'alert_pins', label: 'Live Alert Pins', dataKey: 'alert_pins' },
       { key: 'gdelt_events', label: 'GDELT Events', dataKey: 'gdelt_events' },
+      { key: 'curiosities', label: 'Curiosities Atlas', dataKey: 'curiosities', description: 'Click pins to label · notes save locally' },
     ],
   },
   {
@@ -145,11 +161,64 @@ const LAYER_GROUPS: LayerGroupDef[] = [
     ],
   },
   {
+    label: 'GROUND',
+    fullLabel: 'GROUND TRUTH',
+    icon: MapPinned,
+    layers: [
+      { key: 'uap', label: 'UAP / NUFORC', dataKey: '', description: 'City-level reports' },
+      { key: 'abandoned', label: 'Abandoned Rail / Industrial', dataKey: '' },
+      { key: 'trails', label: 'Trails', dataKey: '', description: 'Cycle · hike · foot · disused rail' },
+      { key: 'public_access', label: 'Public Access Land', dataKey: '', description: 'Parks · protected · BLM' },
+      { key: 'nightlife', label: 'Nightlife + Plazas', dataKey: '' },
+      { key: 'civic_311', label: '311 Requests', dataKey: '', description: 'US cities in view' },
+      { key: 'vacant', label: 'Vacant Property', dataKey: '', description: 'US cities in view' },
+      { key: 'historic_maps', label: 'Historic Map Index', dataKey: '', description: 'LOC footprints · no tiles' },
+    ],
+  },
+  {
+    label: 'TRANSIT',
+    fullLabel: 'TRANSIT',
+    icon: TrainFront,
+    layers: [
+      { key: 'gtfs', label: 'Transit Vehicles', dataKey: '', description: 'GTFS realtime' },
+      { key: 'trains', label: 'Passenger Rail', dataKey: '', description: 'Live trains + passenger network' },
+      { key: 'freight_rail', label: 'Freight Rail', dataKey: '', description: 'Freight corridors · OSM overlay' },
+      { key: 'transit_alerts', label: 'Transit Alerts', dataKey: '', description: 'GTFS-RT ServiceAlerts' },
+      { key: 'gbfs', label: 'Bikes / Scooters', dataKey: '', description: 'GBFS free bikes & stations' },
+      { key: 'live_traffic', label: 'Live Traffic', dataKey: '', description: 'TomTom flow · needs TOMTOM_API_KEY' },
+      { key: 'road_incidents', label: 'Road Incidents', dataKey: '', description: 'TomTom + 511 / DOT' },
+      { key: 'street_view', label: 'Street View', dataKey: '', description: 'Mapillary coverage · click to peek' },
+    ],
+  },
+  {
+    label: 'FIELD',
+    fullLabel: 'FIELD SENSORS',
+    icon: Gauge,
+    layers: [
+      { key: 'gauges', label: 'USGS Water Gauges', dataKey: '' },
+      { key: 'buoys', label: 'Ocean Buoys', dataKey: '', description: 'NDBC wind · wave · temp' },
+      { key: 'lightning', label: 'Lightning', dataKey: '', description: 'Live strikes' },
+      { key: 'storms', label: 'Storm Tracks', dataKey: '', description: 'NHC active storms' },
+      { key: 'aprs', label: 'APRS', dataKey: '', description: 'Amateur radio · needs APRS_FI_API_KEY' },
+    ],
+  },
+  {
     label: 'DISPLAY',
     fullLabel: 'DISPLAY',
     icon: Sun,
     layers: [
       { key: 'day_night', label: 'Day / Night Cycle', dataKey: '' },
+      { key: 'paleo_sl', label: 'Paleo / Sea Level', description: '−120…+70 m · paleocoasts', dataKey: '' },
+      { key: 'paleo_sl_controls', label: 'Time Controls', description: 'Meters or Ma', dataKey: '', parent: 'paleo_sl' },
+      { key: 'leylines', label: 'Leylines', description: 'Watkins · energy grid · leylines.net', dataKey: '' },
+      { key: 'leylines_controls', label: 'Mode', description: 'Watkins · Grid · Both', dataKey: '', parent: 'leylines' },
+      {
+        key: 'admin_borders',
+        label: 'Admin borders',
+        dataKey: '',
+        description: 'Countries, US states, Canadian provinces — default on in SAT view.',
+      },
+      { key: 'weather_radar', label: 'Weather Radar', dataKey: '', description: 'RainViewer tiles' },
       { key: 'terrain_3d', label: '3D Buildings', description: 'City detail · zoom 14.5+', dataKey: '' },
       { key: 'terrain_elevation', label: '3D Terrain', description: 'Mountains · zoom 10+', dataKey: '' },
     ],
@@ -205,7 +274,7 @@ function SubLayerStem() {
   );
 }
 
-function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'core', setTheme, capabilities = {}, terrainStatus = 'idle', onTerrainRetry, onTerrainFocus, on3DModeSelected, revealed = true }: LayerPanelProps) {
+function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'core', setTheme, capabilities = {}, terrainStatus = 'idle', onTerrainRetry, onTerrainFocus, on3DModeSelected, revealed = true, onFlyoutChange }: LayerPanelProps) {
   const [hoveredGroup, setHoveredGroup] = useState<string | null>(null);
   /**
    * A pinned group stays open when the pointer leaves. Hover-only flyouts are
@@ -221,6 +290,12 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [pinnedGroup]);
+
+  const flyoutOpen = Boolean(hoveredGroup || pinnedGroup);
+  useEffect(() => {
+    onFlyoutChange?.(flyoutOpen);
+    return () => onFlyoutChange?.(false);
+  }, [flyoutOpen, onFlyoutChange]);
 
   const toggle = (key: string) => {
     if ((key === 'terrain_elevation' || key === 'terrain_3d') && !activeLayers[key]) on3DModeSelected?.();
@@ -358,7 +433,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
       initial={{ x: -60, opacity: 0 }}
       animate={revealed ? { x: 0, opacity: 1 } : { x: -60, opacity: 0 }}
       transition={{ type: 'spring', damping: 30, stiffness: 200, delay: 0.25 }}
-      className="absolute top-0 left-0 h-full w-[48px] flex flex-col items-center pt-24 pb-6 z-50 pointer-events-auto"
+      className="absolute top-0 left-0 h-full w-[48px] flex flex-col items-center pt-3 pb-6 z-50 pointer-events-auto"
       style={{
         background: 'rgba(0,0,0,0.15)',
         backdropFilter: 'blur(24px) saturate(1.2)',
@@ -439,7 +514,11 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
                     animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }}
                     exit={{ opacity: 0, x: -4, filter: 'blur(2px)' }}
                     transition={{ duration: 0.18, ease: 'easeOut' }}
-                    className={`absolute left-[52px] ${index === 0 ? 'top-0' : 'top-1/2 -translate-y-1/2'} min-w-[220px] rounded-xl p-3 z-[100] pointer-events-auto`}
+                    className={`absolute left-[52px] min-w-[240px] max-w-[300px] max-h-[min(70vh,560px)] flex flex-col rounded-xl p-3 z-[100] pointer-events-auto ${
+                      group.label === 'GROUND' || group.label === 'TRANSIT' || group.label === 'FIELD' || group.label === 'DISPLAY' || group.label === 'NETINTEL'
+                        ? 'bottom-0'
+                        : 'top-0'
+                    }`}
                     style={{
                       background: 'rgba(0,0,0,0.6)',
                       backdropFilter: 'blur(40px) saturate(1.5)',
@@ -448,7 +527,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
                       boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
                     }}
                   >
-                    <div className="flex items-center gap-2 mb-2.5 pb-1.5 border-b border-white/[0.04]">
+                    <div className="flex items-center gap-2 mb-2.5 pb-1.5 border-b border-white/[0.04] flex-shrink-0">
                       <span className="text-[10px] font-mono tracking-[0.2em] uppercase text-white/35 flex-1">
                         {group.fullLabel}
                       </span>
@@ -470,7 +549,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
                         </button>
                       )}
                     </div>
-                    <div className="flex flex-col gap-0.5">
+                    <div className="flex flex-col gap-0.5 overflow-y-auto overscroll-contain styled-scrollbar min-h-0 pr-0.5">
                       {group.layers.map((layer) => {
                         const isLayerActive = activeLayers[layer.key];
                         const count = getCount(layer.dataKey, layer.catKey);
@@ -534,27 +613,7 @@ function LayerPanel({ data, activeLayers, setActiveLayers, isMobile, theme = 'co
         {studioOpen && <StyleStudio onClose={() => setStudioOpen(false)} />}
       </AnimatePresence>
 
-      {/* Ghost Protocol Toggle */}
-      {setTheme && (
-        <button
-          onClick={() => setTheme(theme === 'core' ? 'ghost' : 'core')}
-          className="w-10 h-10 flex items-center justify-center rounded-lg transition-all duration-500 cursor-pointer"
-          style={{
-            background: theme === 'ghost' ? 'rgba(179, 136, 255, 0.1)' : 'transparent',
-          }}
-          title="Ghost Protocol"
-        >
-          <Ghost
-            className="transition-all duration-500"
-            style={{
-              width: 15,
-              height: 15,
-              color: theme === 'ghost' ? '#B388FF' : 'rgba(255,255,255,0.15)',
-              filter: theme === 'ghost' ? 'drop-shadow(0 0 6px rgba(179, 136, 255, 0.5))' : 'none',
-            }}
-          />
-        </button>
-      )}
+      {/* Ghost Protocol rail toggle removed (Style Studio remains). */}
     </motion.div>
   );
 }

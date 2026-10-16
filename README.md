@@ -62,6 +62,38 @@ Osiris is a production-grade OSINT platform that provides situational awareness 
 
 ---
 
+## Fork additions & modifications
+
+Work on `feat/osiris-desktop` ([NewDoggerland/osiris](https://github.com/NewDoggerland/osiris)) beyond upstream `master`. Desktop details: **[docs/DESKTOP.md](docs/DESKTOP.md)**.
+
+### Additions
+
+| Area | What landed |
+|------|-------------|
+| **Desktop (Electron)** | Portable pack (`npm run desktop:pack`), standalone Next spawn, health gate, userData `.env`, webviewTag for embed-blocked YouTube |
+| **Floating chrome** | Draggable/resizable `FloatingWindow` for tool panels, SpaceCam, live feed, OI, alerts, etc.; MapLibre popup resize |
+| **ISS / SpaceCam** | MAP SYNC (TLE follow, feed-aware pitch/FOV/zoom, track-up); stream lag control; save view defaults (pitch 0 / zoom 7.5 / lag 35s); auto-hide 16:9 chrome; edge placement |
+| **Admin borders** | Countries + US states + Canadian provinces GeoJSON; Layer Panel toggle; default on in SAT, off in MAP |
+| **Live traffic** | TomTom flow tile proxy + expanded road incidents (TomTom + 511 sources) |
+| **Maritime / AIS** | Full AIS trails, multi-vessel tracks, Layer Panel category toggles, vessel/megayacht search (viewport vs all), ports/chokepoints |
+| **Transit / rail** | Active tracks dock; GTFS worldwide in-viewport; direction arrows + next stops; RIPTA + CTtransit; trains layer |
+| **Aviation UX** | Helicopter vs fixed-wing icons; full flight density at zoom ≥ 7 |
+| **Ground layers** | GROUND group: UAP, abandoned, nightlife, GTFS, trains, transit alerts, GBFS, gauges, buoys, lightning, storms, APRS, 311, vacant, historic maps |
+| **News embeds** | Desktop Guest webview path when channels block iframes |
+
+### Modifications
+
+| Area | Change |
+|------|--------|
+| **Cold start** | CCTV + live camera previews off by default; not restored from `?layers=` URL |
+| **View chrome** | 3D/MAP strip bottom-left; fade under layer flyouts; Next.js indicator kept reachable |
+| **ISS MAP SYNC** | Continuous rAF follow; operator owns pitch/zoom after lock; lag trails YouTube (~35s default) |
+| **SpaceCam panel** | Overlay chrome auto-hides; window locked 16:9; can sit flush on screen edges |
+| **Boot** | Splash screen removed |
+| **Pack / build** | Standalone node_modules staging; avoid nested standalone in packs |
+
+---
+
 ## Architecture
 
 ```

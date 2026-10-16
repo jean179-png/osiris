@@ -8,6 +8,8 @@ import {
   Search, X, RefreshCw, Image as ImageIcon, Play, Eye, Repeat2, CornerDownRight, Waves, Layers, AlertTriangle,
 } from 'lucide-react';
 import AiOverview from './AiOverview';
+import FloatingWindow from '@/components/FloatingWindow';
+import { defaultRightRailRect } from '@/lib/floating-window';
 import {
   ALERT_KINDS, BLOCS, BLOC_ORDER, buildThreads, groupStatements, timeAgo, type AlertKind, type Bloc, type DigestReport,
 } from '@/lib/alert-digest';
@@ -1116,10 +1118,10 @@ export default function LiveAlerts({ data, onLocate, onWatchFeed, onRefresh, pin
       transition={{ delay: 0.15, duration: 0.4 }}
       role={maximized ? 'dialog' : undefined}
       aria-label={maximized ? 'Live alerts' : undefined}
-      className={`glass-panel flex flex-col overflow-hidden pointer-events-auto transition-all duration-300 ${maximized ? 'fixed inset-4 z-[9999] bg-[#0a0a09]/95 backdrop-blur-3xl' : 'shrink-0 h-[560px] max-h-[82vh] resize-y'}`}
+      className={`glass-panel flex flex-col overflow-hidden pointer-events-auto transition-all duration-300 ${maximized ? 'h-full bg-[#0a0a09]/95 backdrop-blur-3xl' : 'shrink-0 h-full max-h-full'}`}
     >
       {/* Header: title and controls, then a status line */}
-      <div className="flex-shrink-0 border-b border-[rgba(255,255,255,0.05)] bg-[rgba(0,0,0,0.3)]">
+      <div data-drag-handle={maximized ? true : undefined} className={`flex-shrink-0 border-b border-[rgba(255,255,255,0.05)] bg-[rgba(0,0,0,0.3)] ${maximized ? 'cursor-grab active:cursor-grabbing' : ''}`}>
         <div className="flex items-center justify-between gap-2 px-3 pt-2 pb-1">
           <button
             type="button"
@@ -1210,12 +1212,32 @@ export default function LiveAlerts({ data, onLocate, onWatchFeed, onRefresh, pin
     </motion.div>
   );
 
+  const vpW = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const vpH = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const shell = (
+    <FloatingWindow
+      storageKey={maximized ? 'alerts-maximized' : 'panel-alerts'}
+      aria-label="Live alerts"
+      zIndex={maximized ? 9999 : 400}
+      minWidth={maximized ? 360 : 280}
+      minHeight={280}
+      defaultRect={
+        maximized
+          ? { x: 16, y: 16, w: Math.max(400, vpW - 32), h: Math.max(320, vpH - 32) }
+          : defaultRightRailRect(320, 560)
+      }
+      className={maximized ? 'bg-[#0a0a09]/95 backdrop-blur-3xl' : undefined}
+    >
+      {content}
+    </FloatingWindow>
+  );
+
   // Maximising takes a click, so this branch never runs during server render.
   if (maximized && typeof document !== 'undefined') {
-    return createPortal(content, document.body);
+    return createPortal(shell, document.body);
   }
 
-  return content;
+  return shell;
 }
 
 function EmptyState({ text, onClear, onRetry }: { text: string; onClear?: () => void; onRetry?: () => void }) {

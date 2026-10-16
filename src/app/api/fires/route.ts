@@ -1,11 +1,12 @@
-
 import { NextResponse } from 'next/server';
+import { httpJson, httpText } from '@/lib/httpJson';
 
 export const dynamic = 'force-dynamic';
 
 /**
  * OSIRIS — Active Fire & Wildfire Tracking
  * Multi-source: NASA FIRMS Open Data (primary for global fires), NASA EONET (volcanoes)
+ * Uses httpJson/httpText — Next undici fetch fails these hosts intermittently.
  */
 
 export async function GET() {
@@ -21,19 +22,16 @@ export async function GET() {
 
     for (const url of firmsSources) {
       try {
-        const res = await fetch(url, {
-          signal: AbortSignal.timeout(15000),
-          headers: { 'User-Agent': 'OSIRIS-Intelligence-Platform/3.5' },
+        const text = await httpText(url, {
+          timeoutMs: 25_000,
+          headers: { Accept: 'text/csv,text/plain,*/*' },
         });
-        if (res.ok) {
-          const text = await res.text();
-          if (text && text.includes('latitude') && text.length > 200) {
-            const parsed = parseCSV(text);
-            if (parsed.length > 0) {
-              fires = parsed;
-              source = url.includes('SUOMI') ? 'NASA-FIRMS (VIIRS)' : 'NASA-FIRMS (MODIS)';
-              break;
-            }
+        if (text && text.includes('latitude') && text.length > 200) {
+          const parsed = parseCSV(text);
+          if (parsed.length > 0) {
+            fires = parsed;
+            source = url.includes('SUOMI') ? 'NASA-FIRMS (VIIRS)' : 'NASA-FIRMS (MODIS)';
+            break;
           }
         }
       } catch { continue; }
@@ -41,29 +39,27 @@ export async function GET() {
 
     // Source 2: Pull volcanoes from EONET for richer data
     try {
-      const volcRes = await fetch('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&category=volcanoes&limit=50', {
-        signal: AbortSignal.timeout(10000),
-      });
-      if (volcRes.ok) {
-        const volcData = await volcRes.json();
-        const volcanoes = (volcData.events || []).map((e: any) => {
-          const geo = e.geometry?.[e.geometry.length - 1];
-          if (!geo?.coordinates) return null;
-          return {
-            lat: geo.coordinates[1],
-            lng: geo.coordinates[0],
-            brightness: 500,
-            confidence: 'high',
-            date: geo.date?.split('T')[0] || '',
-            time: '',
-            frp: 100,
-            title: `[VOLCANO] ${e.title}`,
-            type: 'volcano',
-          };
-        }).filter(Boolean);
-        fires = [...fires, ...volcanoes];
-        if (!source) source = 'NASA-EONET';
-      }
+      const volcData = await httpJson<{ events?: any[] }>(
+        'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&category=volcanoes&limit=50',
+        { timeoutMs: 15_000 },
+      );
+      const volcanoes = (volcData.events || []).map((e: any) => {
+        const geo = e.geometry?.[e.geometry.length - 1];
+        if (!geo?.coordinates) return null;
+        return {
+          lat: geo.coordinates[1],
+          lng: geo.coordinates[0],
+          brightness: 500,
+          confidence: 'high',
+          date: geo.date?.split('T')[0] || '',
+          time: '',
+          frp: 100,
+          title: `[VOLCANO] ${e.title}`,
+          type: 'volcano',
+        };
+      }).filter(Boolean);
+      fires = [...fires, ...volcanoes];
+      if (!source) source = 'NASA-EONET';
     } catch (e) { console.warn('[OSIRIS] Suppressed EONET error:', e instanceof Error ? e.message : e); }
 
     return NextResponse.json({

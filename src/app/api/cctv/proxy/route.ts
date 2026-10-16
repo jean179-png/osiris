@@ -23,6 +23,11 @@ const ALLOWED_HOSTS = [
   'eismoinfo.lt',
   // Serves over plain http, which an https page blocks as mixed content.
   'infobanjirjps.selangor.gov.my',
+  // RIDOT highway snapshots (paths contain spaces; some rows still advertise http).
+  'www.dot.ri.gov',
+  'dot.ri.gov',
+  // Ventusky hourly city stills (Haarlem skyline and siblings).
+  'webcams.ventusky.com',
 ];
 
 // Taiwan Highway Bureau cameras are DigiEver encoders, and they emit a

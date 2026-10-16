@@ -2,7 +2,23 @@
  * OSIRIS — Stealth Fetch Utility
  * Generates randomized HTTP headers to distribute API requests
  * across a pool of spoofed residential IP addresses and browser fingerprints.
+ *
+ * Uses Node's https client rather than Next's bundled undici `fetch`, which
+ * stalls with `TypeError: fetch failed` / UND_ERR_CONNECT_TIMEOUT on many
+ * upstreams (adsb.fi, Carto tiles, USGS, FIRMS, MBTA, …) from the server runtime.
  */
+
+import dns from 'dns';
+import http from 'http';
+import https from 'https';
+import zlib from 'zlib';
+import type { Readable } from 'stream';
+
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {
+  /* older Node */
+}
 
 // Residential IP ranges (common ISP subnets globally)
 const IP_POOLS = [
@@ -81,37 +97,118 @@ export function stealthHeaders(extraHeaders?: Record<string, string>): Record<st
   };
 }
 
+function headersToObject(headers?: HeadersInit): Record<string, string> {
+  if (!headers) return {};
+  if (headers instanceof Headers) return Object.fromEntries(headers.entries());
+  if (Array.isArray(headers)) return Object.fromEntries(headers);
+  return { ...headers };
+}
+
+function resolveUrl(url: string | URL | Request): string {
+  if (typeof url === 'string') return url;
+  if (url instanceof URL) return url.toString();
+  return url.url;
+}
+
+function timeoutMsFromSignal(signal: AbortSignal | null | undefined, fallback: number): number {
+  if (!signal) return fallback;
+  // AbortSignal.timeout(n) exposes nothing reliable across runtimes; keep a hard cap.
+  return fallback;
+}
+
 /**
  * Perform a fetch with stealth headers injected automatically.
- * Drop-in replacement for global fetch() with identical signature.
+ * Drop-in replacement for global fetch() with identical signature (GET/HEAD/POST).
  */
 export async function stealthFetch(
   url: string | URL | Request,
-  init?: RequestInit
+  init?: RequestInit,
 ): Promise<Response> {
-  const headers = stealthHeaders(
-    init?.headers ? Object.fromEntries(
-      init.headers instanceof Headers
-        ? init.headers.entries()
-        : Array.isArray(init.headers)
-          ? init.headers
-          : Object.entries(init.headers)
-    ) : undefined
-  );
+  const target = resolveUrl(url);
+  const method = (init?.method || 'GET').toUpperCase();
+  const headers = stealthHeaders(headersToObject(init?.headers));
+  const timeoutMs = timeoutMsFromSignal(init?.signal ?? null, 30_000);
+  const body =
+    init?.body == null
+      ? undefined
+      : typeof init.body === 'string'
+        ? Buffer.from(init.body)
+        : Buffer.isBuffer(init.body)
+          ? init.body
+          : Buffer.from(await new Response(init.body).arrayBuffer());
 
-  const controller = new AbortController();
-  if (init?.signal) {
-    init.signal.addEventListener('abort', () => controller.abort());
-  }
+  return new Promise<Response>((resolve, reject) => {
+    let settled = false;
+    const fail = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const ok = (res: Response) => {
+      if (settled) return;
+      settled = true;
+      resolve(res);
+    };
 
-  const timeoutId = setTimeout(() => controller.abort(new Error('stealthFetch Hard Timeout')), 30000);
+    if (init?.signal?.aborted) {
+      fail(init.signal.reason ?? new Error('aborted'));
+      return;
+    }
 
-  try {
-    const res = await fetch(url, { ...init, headers, signal: controller.signal });
-    clearTimeout(timeoutId);
-    return res;
-  } catch (err) {
-    clearTimeout(timeoutId);
-    throw err;
-  }
+    const onAbort = () => {
+      req.destroy(new Error('aborted'));
+    };
+    init?.signal?.addEventListener('abort', onAbort, { once: true });
+
+    const parsed = new URL(target);
+    const lib = parsed.protocol === 'http:' ? http : https;
+    const req = lib.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
+        path: parsed.pathname + parsed.search,
+        method,
+        headers: {
+          ...headers,
+          ...(body ? { 'Content-Length': String(body.length) } : {}),
+        },
+        timeout: timeoutMs,
+        family: 4,
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        const encoding = (res.headers['content-encoding'] || '').toLowerCase();
+        let stream: Readable = res;
+        if (encoding === 'gzip') stream = res.pipe(zlib.createGunzip());
+        else if (encoding === 'deflate') stream = res.pipe(zlib.createInflate());
+        else if (encoding === 'br') stream = res.pipe(zlib.createBrotliDecompress());
+
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        stream.on('error', fail);
+        stream.on('end', () => {
+          init?.signal?.removeEventListener('abort', onAbort);
+          const buf = Buffer.concat(chunks);
+          const outHeaders = new Headers();
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (v == null) continue;
+            // Body is already decoded — don't advertise encoding to Response consumers.
+            if (k.toLowerCase() === 'content-encoding') continue;
+            if (k.toLowerCase() === 'content-length') continue;
+            if (Array.isArray(v)) v.forEach((item) => outHeaders.append(k, item));
+            else outHeaders.set(k, v);
+          }
+          ok(new Response(buf, { status, headers: outHeaders }));
+        });
+      },
+    );
+
+    req.on('timeout', () => req.destroy(new Error('stealthFetch Hard Timeout')));
+    req.on('error', fail);
+    if (body) req.end(body);
+    else req.end();
+  });
 }

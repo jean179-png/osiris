@@ -1,0 +1,344 @@
+{
+  "version": 4,
+  "description": "Curiosities Atlas labels for MA, RI, CT from hauntedplaces.org map data plus local/regional news (Providence Journal, Boston Globe, Sun Chronicle, Patriot Ledger, CT Chronicle, CT tourism trail). Strict 50m pin match; otherwise blank. Never overwrites user edits.",
+  "region": [
+    "MA",
+    "RI",
+    "CT"
+  ],
+  "matchRadiusM": 50,
+  "count": 32,
+  "byState": {
+    "MA": 18,
+    "RI": 5,
+    "CT": 9
+  },
+  "bySource": {
+    "hauntedplaces.org": 16,
+    "local-news+hauntedplaces": 6,
+    "GhostQuest": 8,
+    "local-news": 2
+  },
+  "notes": [
+    {
+      "i": 34009,
+      "lat": 41.23521041870117,
+      "lng": -73.10945892333984,
+      "label": "Boothe Park",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/boothe-park/ Source: hauntedplaces.org.",
+      "matchM": 0,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 34001,
+      "lat": 41.3832893371582,
+      "lng": -73.11872863769531,
+      "label": "Great Hill Cemetery",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/great-hill-cemetery/ Source: hauntedplaces.org.",
+      "matchM": 23,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 33904,
+      "lat": 41.182552337646484,
+      "lng": -73.19075012207031,
+      "label": "Majestic Theater",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/majestic-theater/ Source: hauntedplaces.org.",
+      "matchM": 12,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 34545,
+      "lat": 41.76628875732422,
+      "lng": -72.67235565185547,
+      "label": "Old State House",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/old-state-house-2/ Source: hauntedplaces.org.",
+      "matchM": 34,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 34452,
+      "lat": 41.96179962158203,
+      "lng": -72.74506378173828,
+      "label": "Olde Newgate Prison",
+      "notes": "East Granby. 1705 copper mine → CT's first prison. Apparitions, screams, unseen touch. On CT Haunted History Trail coverage. Source: hauntedplaces.org; CT tourism / local press.",
+      "matchM": 22,
+      "state": "CT",
+      "source": "local-news+hauntedplaces"
+    },
+    {
+      "i": 35288,
+      "lat": 41.30167007446289,
+      "lng": -72.12950134277344,
+      "label": "Seaside Sanatorium",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/seaside-sanatorium/ Source: hauntedplaces.org.",
+      "matchM": 5,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 33783,
+      "lat": 41.32217788696289,
+      "lng": -73.26309204101562,
+      "label": "Stepney Cemetery",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/stepney-cemetery/ Source: hauntedplaces.org.",
+      "matchM": 3,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 34042,
+      "lat": 41.32188034057617,
+      "lng": -73.0896987915039,
+      "label": "Sterling Opera House",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/sterling-opera-house/ Source: hauntedplaces.org.",
+      "matchM": 7,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 35249,
+      "lat": 41.711360931396484,
+      "lng": -72.20552062988281,
+      "label": "Windham Textile Museum",
+      "notes": "CT haunt listing. https://www.hauntedplaces.org/item/windham-textile-museum/ Source: hauntedplaces.org.",
+      "matchM": 45,
+      "state": "CT",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 34951,
+      "lat": 42.27495193481445,
+      "lng": -72.41511535644531,
+      "label": "Belchertown State School",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/belchertown-state-school/ Source: hauntedplaces.org.",
+      "matchM": 15,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 36042,
+      "lat": 42.461727142333984,
+      "lng": -71.3492431640625,
+      "label": "Concord's Colonial Inn",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/concords-colonial-inn/ Source: hauntedplaces.org.",
+      "matchM": 28,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 36515,
+      "lat": 41.643402099609375,
+      "lng": -70.90535736083984,
+      "label": "Fairhaven High School",
+      "notes": "12 Huttleston Avenue, Fairhaven, Massachusetts Fairhaven High School in Fairhaven, Massachusetts was constructed in 1905, and was added to the National Register of Historic Places in January of 1981.. Source: GhostQuest.",
+      "matchM": 21,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 37091,
+      "lat": 42.034542083740234,
+      "lng": -70.05525970458984,
+      "label": "Fitchburg Railroad Depot",
+      "notes": "Old Dewline Road, North Truro, Massachusetts The Jenny Lind Tower in North Truro, Massachusetts was originally constructed in 1845 as part of the Fitchburg Railroad Depot in Boston. It was relocated t. Source: GhostQuest.",
+      "matchM": 0,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 36535,
+      "lat": 42.5203971862793,
+      "lng": -70.89595031738281,
+      "label": "Joshua Ward House",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/joshua-ward-house/ Source: hauntedplaces.org.",
+      "matchM": 32,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 35865,
+      "lat": 42.357421875,
+      "lng": -71.46898651123047,
+      "label": "Longfellow's Wayside Inn",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/longfellows-wayside-inn/ Source: hauntedplaces.org.",
+      "matchM": 20,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 36517,
+      "lat": 41.635684967041016,
+      "lng": -70.90339660644531,
+      "label": "Millicent Library",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/millicent-library/ Source: hauntedplaces.org.",
+      "matchM": 1,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 35311,
+      "lat": 42.108943939208984,
+      "lng": -72.09923553466797,
+      "label": "Old Sturbridge Village",
+      "notes": "1 Old Sturbridge Village Road, Sturbridge, Massachusetts ​Sturbridge Village is a two-hundred-acre living history museum located in Sturbridge, Massachusetts. It is renowned as being the largest livin. Source: GhostQuest.",
+      "matchM": 38,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 36365,
+      "lat": 42.35776138305664,
+      "lng": -71.06051635742188,
+      "label": "Omni Parker House",
+      "notes": "Historic Boston hotel with longstanding haunt lore in local Boston coverage. Source: Boston local coverage / hauntedplaces.org.",
+      "matchM": 20,
+      "state": "MA",
+      "source": "local-news+hauntedplaces"
+    },
+    {
+      "i": 36798,
+      "lat": 42.003440856933594,
+      "lng": -70.60070037841797,
+      "label": "Plymouth Light - Gurnet Light",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/plymouth-light-gurnet-light/ Source: hauntedplaces.org.",
+      "matchM": 35,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 35400,
+      "lat": 42.400840759277344,
+      "lng": -72.001220703125,
+      "label": "Rutland Prison Camp",
+      "notes": "Prison Camp Road, Rutland, Massachusetts Rutland Prison Camp in Rutland, Massachusetts was constructed in 1903 to house criminals convicted of minor crimes such as vandalism, theft, or drunkenness. In. Source: GhostQuest.",
+      "matchM": 17,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 35421,
+      "lat": 42.557552337646484,
+      "lng": -71.98080444335938,
+      "label": "S.K. Pierce Mansion - Haunted Victorian Mansion",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/s-k-pierce-mansion-haunted-victorian-mansion/ Source: hauntedplaces.org.",
+      "matchM": 3,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 35876,
+      "lat": 42.25968551635742,
+      "lng": -71.46458435058594,
+      "label": "Stone's Public House",
+      "notes": "179 Main St, Ashland. Built 1832; lights, slamming doors, thrown objects. Widely covered in MA haunt roundups. Source: GhostQuest / MA local coverage.",
+      "matchM": 11,
+      "state": "MA",
+      "source": "local-news+hauntedplaces"
+    },
+    {
+      "i": 35637,
+      "lat": 42.40510177612305,
+      "lng": -71.68399810791016,
+      "label": "The Clinton Tunnel",
+      "notes": "Boylston Street, Clinton, Massachusetts The Clinton Tunnel in Clinton, Massachusetts was constructed during the early 1900's to divert excess railway traffic from the nearby Wachusett Reservoir. The t. Source: GhostQuest.",
+      "matchM": 2,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 37045,
+      "lat": 41.2847900390625,
+      "lng": -70.10069274902344,
+      "label": "The Jared Coffin House",
+      "notes": "29 Broad Street, Nantucket, Massachusetts The Jared Coffin House Hotel in Nantucket, Massachusetts was constructed as a private residence in 1845 by a wealthy sea captain and shipbuilder named Jared C. Source: GhostQuest.",
+      "matchM": 35,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 36536,
+      "lat": 42.522430419921875,
+      "lng": -70.89518737792969,
+      "label": "The Lyceum - Turner's Seafood",
+      "notes": "MA haunt listing. https://www.hauntedplaces.org/item/the-lyceum-turners-seafood/ Source: hauntedplaces.org.",
+      "matchM": 6,
+      "state": "MA",
+      "source": "hauntedplaces.org"
+    },
+    {
+      "i": 36283,
+      "lat": 42.372928619384766,
+      "lng": -71.1178970336914,
+      "label": "The Porcellian Club",
+      "notes": "1234 Massachusetts Avenue, Cambridge, Massachusetts The Porcellian Club in Cambridge, Massachusetts is a historic all-male club at Harvard University. It was founded in 1791 and is often associated wi. Source: GhostQuest.",
+      "matchM": 10,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 36541,
+      "lat": 42.52296829223633,
+      "lng": -70.8868179321289,
+      "label": "The Stephen Daniels House",
+      "notes": "1 Daniels Street, Salem, Massachusetts The Daniels House Bed & Breakfast in Salem, Massachusetts was built in 1667 as a private residence by a shipbuilder named Stephen Daniels. It was used for many y. Source: GhostQuest.",
+      "matchM": 36,
+      "state": "MA",
+      "source": "GhostQuest"
+    },
+    {
+      "i": 35947,
+      "lat": 41.824317932128906,
+      "lng": -71.41327667236328,
+      "label": "Graduate Providence (Biltmore Hotel)",
+      "notes": "11 Dorrance St. Historic Providence Biltmore (1922). Longstanding hotel haunt lore in local RI coverage. Source: Providence Journal / GhostQuest.",
+      "matchM": 32,
+      "state": "RI",
+      "source": "local-news"
+    },
+    {
+      "i": 35960,
+      "lat": 41.939823150634766,
+      "lng": -71.4066162109375,
+      "label": "Nine Men's Misery / Cumberland Monastery",
+      "notes": "Monastery Park, Cumberland. 1676 Pierce's Fight mass grave; cairn 1928. Local ghostlore; Cumberland library on former abbey site also covered locally. Source: Wikipedia / local RI coverage.",
+      "matchM": 9,
+      "state": "RI",
+      "source": "local-news"
+    },
+    {
+      "i": 35949,
+      "lat": 41.82404327392578,
+      "lng": -71.41246032714844,
+      "label": "Providence City Hall",
+      "notes": "25 Dorrance St. Employees report elevator rides, moving chairs, whispers, cigar smoke; often linked to Mayor Doyle. Covered by Providence Journal; Ghost Hunters 'City Hell' (2012). Source: Providence Journal / hauntedplaces.org.",
+      "matchM": 39,
+      "state": "RI",
+      "source": "local-news+hauntedplaces"
+    },
+    {
+      "i": 36009,
+      "lat": 41.87743377685547,
+      "lng": -71.3824234008789,
+      "label": "Slater Mill",
+      "notes": "67 Roosevelt Ave, Pawtucket. Industrial Revolution birthplace; worker/child machine-death lore in local haunt listings. Source: hauntedplaces.org / local RI coverage.",
+      "matchM": 22,
+      "state": "RI",
+      "source": "local-news+hauntedplaces"
+    },
+    {
+      "i": 36102,
+      "lat": 41.49140167236328,
+      "lng": -71.31378173828125,
+      "label": "White Horse Tavern",
+      "notes": "Colonial tavern (est. 1673). Elderly colonial male and fireplace dining-room lore; top RI haunt in local roundups. Source: hauntedplaces.org / Newport coverage.",
+      "matchM": 3,
+      "state": "RI",
+      "source": "local-news+hauntedplaces"
+    }
+  ]
+}

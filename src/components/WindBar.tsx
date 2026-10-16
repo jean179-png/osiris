@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUp, Pause, Play, SkipBack, SkipForward, Wind } from 'lucide-react';
 import type { Map as MlMap } from 'maplibre-gl';
-import type { WindField } from '@/lib/wind-field';
+import type { WindField } from '@/lib/gfs-wind-field';
 import { blendWind, bracketTime, sampleWind, WIND_BANDS, WIND_STYLE, WindOverlay, type WindGrid, type WindStyle } from '@/lib/wind-layer';
 import { AtCentre, BoxShell, Choice, clock, DAYS, IconButton, Legend, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
 

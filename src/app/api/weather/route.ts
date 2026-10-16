@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { stealthFetch } from '@/lib/stealthFetch';
 import { cachedSource } from '@/lib/sourceCache';
+import { httpJson } from '@/lib/httpJson';
 
 /**
  * OSIRIS — Severe Weather & Anomalies API
@@ -178,12 +179,13 @@ async function collectEvents(): Promise<WeatherEvent[]> {
       stealthFetch('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=100', {
         signal: AbortSignal.timeout(10000),
       }),
-      fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', {
+      // httpJson — Next undici fetch to api.weather.gov fails with "fetch failed".
+      httpJson<NwsResponse>('https://api.weather.gov/alerts/active?status=actual&message_type=alert', {
+        timeoutMs: 15_000,
         headers: {
           Accept: 'application/geo+json',
           'User-Agent': 'OSIRIS Severe Weather Layer',
         },
-        signal: AbortSignal.timeout(10000),
       }),
       stealthFetch('https://www.gdacs.org/xml/rss.xml', {
         signal: AbortSignal.timeout(10000),
@@ -248,9 +250,9 @@ async function collectEvents(): Promise<WeatherEvent[]> {
       }
     }
 
-    if (nwsRes.status === 'fulfilled' && nwsRes.value.ok) {
+    if (nwsRes.status === 'fulfilled' && nwsRes.value) {
       try {
-        const data = (await nwsRes.value.json()) as NwsResponse;
+        const data = nwsRes.value;
         providerSucceeded = true;
 
         for (const feature of data.features || []) {

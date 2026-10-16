@@ -1,0 +1,38 @@
+[
+  {
+    "id": "citi-bike-nyc",
+    "name": "Citi Bike NYC",
+    "autoDiscoveryUrl": "https://gbfs.citibikenyc.com/gbfs/2.3/gbfs.json",
+    "bbox": [-74.1, 40.55, -73.85, 40.9]
+  },
+  {
+    "id": "divvy-chicago",
+    "name": "Divvy Chicago",
+    "autoDiscoveryUrl": "https://gbfs.divvybikes.com/gbfs/2.3/gbfs.json",
+    "bbox": [-87.95, 41.65, -87.5, 42.1]
+  },
+  {
+    "id": "bay-wheels",
+    "name": "Bay Wheels",
+    "autoDiscoveryUrl": "https://gbfs.baywheels.com/gbfs/2.3/gbfs.json",
+    "bbox": [-122.55, 37.3, -121.85, 37.9]
+  },
+  {
+    "id": "capital-bikeshare",
+    "name": "Capital Bikeshare",
+    "autoDiscoveryUrl": "https://gbfs.capitalbikeshare.com/gbfs/2.3/gbfs.json",
+    "bbox": [-77.3, 38.75, -76.85, 39.05]
+  },
+  {
+    "id": "bluebikes-boston",
+    "name": "Bluebikes",
+    "autoDiscoveryUrl": "https://gbfs.bluebikes.com/gbfs/gbfs.json",
+    "bbox": [-71.25, 42.2, -70.9, 42.45]
+  },
+  {
+    "id": "indego-philly",
+    "name": "Indego",
+    "autoDiscoveryUrl": "https://gbfs.bcycle.com/bcycle_indego/gbfs.json",
+    "bbox": [-75.3, 39.85, -75.05, 40.05]
+  }
+]

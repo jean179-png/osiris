@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { decodeGrib2, frameSource, gfsRuns, gfsUrl, toWindField, windTimes, type WindField } from '@/lib/wind-field';
+import { decodeGrib2, frameSource, gfsRuns, gfsUrl, toWindField, windTimes, type WindField } from '@/lib/gfs-wind-field';
 
 export const dynamic = 'force-dynamic';
 

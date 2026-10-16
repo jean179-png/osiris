@@ -1,7 +1,20 @@
+import dns from 'dns';
+import http from 'http';
 import https from 'https';
 import zlib from 'zlib';
 import type { IncomingHttpHeaders } from 'http';
 import type { Readable } from 'stream';
+
+function transportFor(url: string): typeof http | typeof https {
+  return url.startsWith('http://') ? http : https;
+}
+
+// Prefer A records — several upstreams hang on AAAA from the Next server.
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {
+  /* older Node */
+}
 
 /**
  * OSIRIS — JSON fetch over Node's https client.
@@ -39,11 +52,15 @@ interface RawResponse {
  */
 function request(url: string, { timeoutMs = 20000, headers = {} }: RequestOptions): Promise<RawResponse> {
   return new Promise<RawResponse>((resolve, reject) => {
-    const req = https.get(
+    const lib = transportFor(url);
+    const req = lib.get(
       url,
       {
         headers: { 'User-Agent': OSIRIS_UA, Accept: 'application/json', 'Accept-Language': 'en', ...headers },
         timeout: timeoutMs,
+        // Prefer IPv4 — several OSIRIS upstreams (USGS, NHC, FIRMS, SondeHub)
+        // resolve AAAA first and hang in the Next server process until timeout.
+        family: 4,
       },
       (res) => {
         const status = res.statusCode ?? 0;
@@ -89,6 +106,43 @@ export async function httpText(url: string, opts: RequestOptions = {}): Promise<
 
 export async function httpJson<T>(url: string, opts: RequestOptions = {}): Promise<T> {
   return JSON.parse(await httpText(url, opts)) as T;
+}
+
+/** Binary GET (GTFS-RT protobuf, etc.) — same undici escape hatch as httpText. */
+export function httpBuffer(url: string, { timeoutMs = 20000, headers = {} }: RequestOptions = {}): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const lib = transportFor(url);
+    const req = lib.get(
+      url,
+      {
+        headers: { 'User-Agent': OSIRIS_UA, Accept: '*/*', ...headers },
+        timeout: timeoutMs,
+        family: 4,
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status >= 400) {
+          res.resume();
+          reject(new Error(`HTTP ${status}`));
+          return;
+        }
+        const encoding = (res.headers['content-encoding'] || '').toLowerCase();
+        let stream: Readable = res;
+        if (encoding === 'gzip') stream = res.pipe(zlib.createGunzip());
+        else if (encoding === 'deflate') stream = res.pipe(zlib.createInflate());
+        else if (encoding === 'br') stream = res.pipe(zlib.createBrotliDecompress());
+
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        stream.on('error', reject);
+        stream.on('end', () => resolve(new Uint8Array(Buffer.concat(chunks))));
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('Upstream timed out')));
+    req.on('error', reject);
+  });
 }
 
 /** Validators from a previous response, replayed to ask whether it has changed. */

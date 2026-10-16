@@ -2,14 +2,68 @@ import type { CctvCamera } from './types';
 import { stealthFetch } from '@/lib/stealthFetch';
 
 /**
- * OSIRIS — Netherlands CCTV Cameras (Rijkswaterstaat)
+ * OSIRIS — Netherlands CCTV Cameras (Rijkswaterstaat + city live cams)
  * Source: https://api.rwsverkeersinfo.nl/api/cameras
- * 26 operator-controlled HD motorway cameras — NO API KEY NEEDED.
+ * ~26 operator-controlled HD motorway cameras — NO API KEY NEEDED.
  *
  * Replaces opendata.ndw.nu/cameras.json. NDW retired that dataset and it has
  * been answering 404 into a silent catch ever since, so the layer carried no
  * Dutch cameras at all rather than reporting a dead source.
+ *
+ * Harbour / city public webcams live in public-webcams-nl (~200). Amsterdam
+ * Skyline stills are added here so the capital is visible on the traffic
+ * region itself, not only when the public-webcam layer is requested.
  */
+
+function proxied(url: string): string {
+  return `/api/cctv/proxy?url=${encodeURIComponent(url)}`;
+}
+
+function skyline(id: number): string {
+  return proxied(`https://cdn.skylinewebcams.com/live${id}.jpg`);
+}
+
+const AMSTERDAM_LIVE: CctvCamera[] = [
+  {
+    id: 'sky-nl-amsterdam-center',
+    lat: 52.3730, lng: 4.8930,
+    name: "Amsterdam - City Center",
+    city: 'Amsterdam', country: 'Netherlands',
+    feed_url: skyline(5798),
+    external_url: 'https://www.skylinewebcams.com/en/webcam/netherlands/north-holland/amsterdam/city-center.html',
+    source: 'SkylineWebcams',
+  },
+  {
+    id: 'sky-nl-amsterdam-canals',
+    lat: 52.3676, lng: 4.9041,
+    name: "Amsterdam - Canals",
+    city: 'Amsterdam', country: 'Netherlands',
+    feed_url: skyline(3577),
+    external_url: 'https://www.skylinewebcams.com/en/webcam/netherlands/north-holland/amsterdam/canals.html',
+    source: 'SkylineWebcams',
+  },
+];
+
+/**
+ * City-life pins for densify targets. Delfzijl harbour cams already live in
+ * public-webcams-nl. Haarlem's historic Grote Markt cam is offline; Ventusky
+ * publishes an hourly city-skyline still (resolved per request so the region
+ * cache does not freeze a clock-hour path). Delft has no public Markt cam —
+ * the RWS A13 pin in this region is the open live view nearest the city.
+ */
+function haarlemCityLife(): CctvCamera[] {
+  return [
+    {
+      id: 'nl-haarlem-city-view',
+      lat: 52.3810, lng: 4.6370,
+      name: 'Haarlem - City skyline',
+      city: 'Haarlem', country: 'Netherlands',
+      feed_url: '/api/cctv/ventusky-frame?id=932984225',
+      external_url: 'https://www.ventusky.com/webcam-932984225',
+      source: 'Ventusky',
+    },
+  ];
+}
 
 const CAMERAS_JSON = 'https://api.rwsverkeersinfo.nl/api/cameras';
 
@@ -22,9 +76,6 @@ const NL_BOUNDS = { minLat: 50.7, maxLat: 53.7, minLng: 3.3, maxLng: 7.3 };
  * itself. The proxy sends `Referer: https://<host>/`, which the origin accepts,
  * and returns the real JPEG.
  */
-function proxied(url: string): string {
-  return `/api/cctv/proxy?url=${encodeURIComponent(url)}`;
-}
 
 /** One record of the RWS feed. Coordinates arrive as strings. */
 interface RwsCamera {
@@ -86,7 +137,11 @@ export async function fetchNetherlandsCameras(): Promise<CctvCamera[]> {
   });
   if (!res.ok) throw new Error(`RWS HTTP ${res.status}`);
 
-  const cams = parseRwsCameras(await res.json());
-  console.log(`[OSIRIS] Netherlands cameras — Rijkswaterstaat: ${cams.length}`);
+  const cams = [
+    ...parseRwsCameras(await res.json()),
+    ...AMSTERDAM_LIVE,
+    ...haarlemCityLife(),
+  ];
+  console.log(`[OSIRIS] Netherlands cameras — Rijkswaterstaat+city: ${cams.length}`);
   return cams;
 }

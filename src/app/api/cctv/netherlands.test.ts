@@ -79,8 +79,9 @@ describe('fetchNetherlandsCameras', () => {
       expect(c.lng).toBeGreaterThan(3.3);
       expect(c.lng).toBeLessThan(7.3);
       expect(c.country).toBe('Netherlands');
-      expect(c.source).toBe('Rijkswaterstaat');
-      expect(c.feed_url).toMatch(/^\/api\/cctv\/proxy\?url=/);
+      expect(['Rijkswaterstaat', 'SkylineWebcams']).toContain(c.source);
+      expect(c.feed_url || c.external_url).toBeTruthy();
+      if (c.feed_url) expect(c.feed_url).toMatch(/^\/api\/cctv\/proxy\?url=/);
     }
   }, 60_000);
 });

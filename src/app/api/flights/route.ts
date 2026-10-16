@@ -400,17 +400,15 @@ export async function GET() {
     const openSkyWorked = osSnapshot.length > 0;
 
     // ── Phase 3: Regional sweep — last resort only ────────────────────────────
-    // Runs only when there is no OpenSky snapshot at all, never as the steady
-    // state. adsb.fi's geographic endpoint is metered far more tightly than its
-    // /mil feed and answers 200 with an empty ac[] once that budget is spent
-    // rather than 429, so sweeping it every cycle would quietly exhaust it and
-    // look like empty airspace. Paced at ~1 req/s; 30 regions ≈ 33s, inside the
-    // 60s maxDuration above.
+    // Runs only when there is no OpenSky snapshot. Cap to priority corridors so
+    // a cold start cannot block /api/flights for ~33s (30 regions × 1.1s) and
+    // starve every other route on the same Node process.
+    const PRIORITY_REGIONS = REGIONS.slice(0, 10);
     if (!openSkyWorked) {
-      source = 'regional';
-      console.warn('[OSIRIS] no OpenSky snapshot — falling back to adsb.fi regional sweep');
+      source = milCount > 0 ? 'adsbfi-mil+regional' : 'regional';
+      console.warn('[OSIRIS] no OpenSky snapshot — limited adsb.fi regional sweep');
 
-      for (const r of REGIONS) {
+      for (const r of PRIORITY_REGIONS) {
         ingestAc(await fetchAdsbFiRegion(r.lat, r.lon), allRaw, seenHex);
         await new Promise(resolve => setTimeout(resolve, ADSBFI_GAP_MS));
       }

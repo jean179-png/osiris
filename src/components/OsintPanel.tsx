@@ -16,6 +16,7 @@ import ChainBrief from '@/components/ChainBrief';
 import FingerprintSearch, { useFingerprintSearch } from '@/components/FingerprintSearch';
 import DonBotScan from '@/components/DonBotScan';
 import DigitalDonMark from '@/components/DigitalDonMark';
+import FloatingWindow from '@/components/FloatingWindow';
 
 /**
  * Tool groups. At 19 modules a flat grid forces 8px truncated labels
@@ -1564,13 +1565,21 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
   if (isMobile) return renderContent();
 
   if (isFullScreen) {
+    const vpW = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const vpH = typeof window !== 'undefined' ? window.innerHeight : 800;
     const fullScreenNode = (
-      <div className="fixed inset-4 z-[999] flex items-center justify-center">
-        {/* Click-away backdrop; Escape also exits. */}
-        <div className="absolute inset-[-1rem] bg-black/60 backdrop-blur-sm" onClick={() => setIsFullScreen(false)} />
-
-        <div className="relative w-full h-full max-w-[1500px] glass-panel bg-[#0a0a09]/97 backdrop-blur-2xl border border-[var(--cyan-primary)]/40 rounded-xl flex flex-col overflow-hidden shadow-2xl shadow-[var(--cyan-primary)]/20">
-          <div className="flex items-center justify-between px-6 py-3.5 border-b border-[var(--border-secondary)] bg-[#111] flex-shrink-0">
+      <>
+        <div className="fixed inset-0 z-[998] bg-black/60 backdrop-blur-sm" onClick={() => setIsFullScreen(false)} aria-hidden />
+        <FloatingWindow
+          storageKey="osint-fullscreen"
+          aria-label="OSIRIS Recon Toolkit"
+          zIndex={999}
+          minWidth={480}
+          minHeight={320}
+          defaultRect={{ x: 16, y: 16, w: Math.min(1500, Math.max(640, vpW - 32)), h: Math.max(400, vpH - 32) }}
+          className="glass-panel bg-[#0a0a09]/97 backdrop-blur-2xl border border-[var(--cyan-primary)]/40 rounded-xl shadow-2xl shadow-[var(--cyan-primary)]/20"
+        >
+          <div data-drag-handle className="flex cursor-grab items-center justify-between px-6 py-3.5 border-b border-[var(--border-secondary)] bg-[#111] flex-shrink-0 active:cursor-grabbing">
             <div className="flex items-center gap-3 min-w-0">
               <Radar className="w-5 h-5 text-[var(--cyan-primary)] flex-shrink-0" />
               <span className="hud-text text-[16px] text-[var(--text-primary)]">OSIRIS RECON TOOLKIT</span>
@@ -1592,9 +1601,8 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
             </button>
           </div>
 
-          {/* Two panes: the toolkit stays visible while results use the width. */}
           <div className="flex-1 flex min-h-0">
-            <aside className="w-[260px] flex-shrink-0 border-r border-[var(--border-secondary)] bg-[#0d0d0c]/60">
+            <aside className="w-[260px] flex-shrink-0 border-r border-[var(--border-secondary)] bg-[#0d0d0c]/60 overflow-y-auto styled-scrollbar">
               {renderToolRail()}
             </aside>
             <main className="flex-1 min-w-0 overflow-y-auto p-6 styled-scrollbar">
@@ -1614,14 +1622,14 @@ function OsintPanelInner({ isMobile, onSweepVisualize, onScanGeolocate }: OsintP
               </div>
             </main>
           </div>
-        </div>
-      </div>
+        </FloatingWindow>
+      </>
     );
     return typeof document !== 'undefined' ? createPortal(fullScreenNode, document.body) : fullScreenNode;
   }
 
   return (
-    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.3, duration: 0.6 }} className="glass-panel flex flex-col overflow-hidden pointer-events-auto shrink-0 h-[500px] max-h-[80vh] resize-y">
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.3, duration: 0.6 }} className="glass-panel flex flex-col overflow-hidden pointer-events-auto shrink-0 h-full min-h-0">
       <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-[rgba(255,255,255,0.05)] bg-[rgba(0,0,0,0.3)] hover:bg-[var(--hover-accent)] transition-colors">
         <button onClick={() => setExpanded(!expanded)} className="flex items-center gap-2 flex-1">
           <Radar className="w-3.5 h-3.5 text-[var(--cyan-primary)]" />

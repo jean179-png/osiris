@@ -16,6 +16,7 @@ import { fetchRomaniaCameras } from './romania';
 import { fetchAustraliaCameras } from './australia';
 import { fetchItalyCameras } from './italy';
 import { fetchCzechiaCameras } from './czechia';
+import { fetchUkMidlandsCameras } from './uk-midlands';
 import { fetchSlovakiaCameras } from './slovakia';
 import { fetchGermanyCameras } from './germany';
 import { fetchFranceCameras } from './france';
@@ -46,6 +47,10 @@ import { fetchGeorgiaCameras } from './georgia';
 import { fetchNorthCarolinaCameras } from './northcarolina';
 import { fetchArizonaCameras } from './arizona';
 import { fetchTexasCameras } from './texas';
+import { fetchPennsylvaniaCameras } from './pennsylvania';
+import { fetchMassachusettsCameras } from './massachusetts';
+import { fetchNewYorkCameras } from './newyork';
+import { fetchRhodeIslandCameras } from './rhodeisland';
 import { fetchEastAsiaCameras, fetchSeAsiaCameras, fetchWestAsiaCameras } from './opencctv';
 import {
   fetchLatamLiveCameras,
@@ -68,13 +73,13 @@ import {
 
 // ═══ CAMERA SOURCE DEFINITIONS ═══
 
-// ── UK: Transport for London JamCams (~900) ──
+// ── UK: Transport for London JamCams (~900) + Midlands city-life pins ──
 async function fetchTfLCameras(): Promise<any[]> {
   try {
     const res = await stealthFetch('https://api.tfl.gov.uk/Place/Type/JamCam', { signal: AbortSignal.timeout(12000) });
-    if (!res.ok) return [];
+    if (!res.ok) return await fetchUkMidlandsCameras();
     const data = await res.json();
-    return (data || []).map((cam: any) => {
+    const tfl = (data || []).map((cam: any) => {
       const imgProp = cam.additionalProperties?.find((p: any) => p.key === 'imageUrl');
       const camId = cam.id?.replace('JamCams_', '') || '';
       return {
@@ -84,7 +89,11 @@ async function fetchTfLCameras(): Promise<any[]> {
         source: 'TfL',
       };
     }).filter((c: any) => c.lat && c.lng);
-  } catch (e) { return []; }
+    const midlands = await fetchUkMidlandsCameras();
+    return [...tfl, ...midlands];
+  } catch (e) {
+    return fetchUkMidlandsCameras();
+  }
 }
 
 // ── US-WEST: WSDOT Washington State (~500) ──
@@ -341,15 +350,8 @@ async function fetchUSEastCameras(): Promise<any[]> {
 async function fetchEuropeCameras(): Promise<any[]> {
   const cams: any[] = [];
 
-  /* The Netherlands used to be fetched here from opendata.ndw.nu/cameras.json.
-     NDW retired that dataset and it 404s; ./netherlands now serves the country
-     from the Rijkswaterstaat feed, which is still published. */
-  try {
-    cams.push(...await fetchNetherlandsCameras());
-  } catch (e) {
-    console.warn('[OSIRIS] Netherlands cameras failed — absent from this refresh:', e instanceof Error ? e.message : e);
-  }
-
+  /* Netherlands RWS used to be inlined here; it now has its own region key
+     (`netherlands`) so a Dutch viewport does not also pull Austria via europe. */
   cams.push(...await fetchAsfinagCameras());
 
   return cams.filter((c: any) => c.lat && c.lng);
@@ -479,6 +481,10 @@ const RAW_REGION_FETCHERS: Record<string, RegionFetcher> = {
   'northcarolina': fetchNorthCarolinaCameras,
   'arizona': fetchArizonaCameras,
   'texas': fetchTexasCameras,
+  'pennsylvania': fetchPennsylvaniaCameras,
+  'massachusetts': fetchMassachusettsCameras,
+  'newyork': fetchNewYorkCameras,
+  'rhodeisland': fetchRhodeIslandCameras,
   'eastasia': fetchEastAsiaCameras,
   'seasia': fetchSeAsiaCameras,
   'westasia': fetchWestAsiaCameras,
@@ -584,7 +590,9 @@ function refreshRegion(region: string): Promise<any[]> {
   if (existing) return existing;
 
   const started = regionPool.run(async () => {
-    const budgetMs = region === 'florida' || region === 'georgia' ? PAGED_REGION_BUDGET_MS : REGION_BUDGET_MS;
+    const budgetMs = region === 'florida' || region === 'georgia' || region === 'rhodeisland'
+      ? PAGED_REGION_BUDGET_MS
+      : REGION_BUDGET_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     try {
@@ -794,6 +802,13 @@ function getRegionsForBounds(lat: number, lng: number, radius: number): string[]
   if (lat > 30.3 && lat < 35.1 && lng > -85.7 && lng < -80.8) regions.push('georgia');
   if (lat > 33.8 && lat < 36.6 && lng > -84.4 && lng < -75.4) regions.push('northcarolina');
   if (lat > 31.3 && lat < 37.1 && lng > -115.0 && lng < -109.0) regions.push('arizona');
+  /* Northeast DOTs — us-east is only a handful of curated OH cams, so these
+     are listed explicitly the same way florida/michigan are. */
+  if (lat > 39.7 && lat < 42.3 && lng > -80.6 && lng < -74.7) regions.push('pennsylvania');
+  if (lat > 41.2 && lat < 42.95 && lng > -73.55 && lng < -69.85) regions.push('massachusetts');
+  if (lat > 40.4 && lat < 45.05 && lng > -79.8 && lng < -71.75) regions.push('newyork');
+  // Rhode Island (RIDOT) — Providence / Pawtucket / Warwick; MassDOT stops at the state line
+  if (lat > 41.1 && lat < 42.05 && lng > -72.0 && lng < -71.05) regions.push('rhodeisland');
   // Canada
   if (lat > 42 && lat < 70 && lng > -141 && lng < -52) regions.push('canada');
   if (lat > 53.3 && lat < 53.8 && lng > -114.0 && lng < -113.2) regions.push('edmonton');
@@ -879,10 +894,16 @@ function getRegionsForBounds(lat: number, lng: number, radius: number): string[]
   // European gaps (Azores in the west through northern Norway)
   if (lat > 35 && lat < 72 && lng > -32 && lng < 32) regions.push('europe-live');
 
-  /* Public webcams. The Dutch box is the one netherlands.ts filters on; the other
-     three are drawn round what those arrays actually hold, Canaries and Nordkapp
-     included, rather than round the continents in the abstract. */
-  if (lat > 50.7 && lat < 53.7 && lng > 3.3 && lng < 7.3) regions.push('public-webcams-nl');
+  /* Netherlands RWS (+ Amsterdam live cams) and the separate public-webcam
+     catalogue share the same mainland box. Both keys are pushed so harbour /
+     city cams stay available without folding 200 static pins into the RWS
+     refresh path. */
+  if (lat > 50.7 && lat < 53.7 && lng > 3.3 && lng < 7.3) {
+    regions.push('netherlands');
+    regions.push('public-webcams-nl');
+  }
+  /* Public webcams. The other three are drawn round what those arrays actually
+     hold, Canaries and Nordkapp included, rather than round the continents. */
   if (lat > 27 && lat < 72 && lng > -18 && lng < 31) regions.push('public-webcams-europe');
   if (lat > 11 && lat < 52 && lng > -124 && lng < -59) regions.push('public-webcams-americas');
   if (lat > -35 && lat < 62 && lng > 30 && lng < 152) regions.push('public-webcams-rest');

@@ -1,9 +1,29 @@
-import { NextResponse } from 'next/server';
-import WebSocket from 'ws';
+import { NextRequest, NextResponse } from 'next/server';
+import { buildAishubUrl, mapAishubResponse, type OsirisShip } from '@/lib/aishub';
+import { fetchOpenWatersVessels, type OpenWatersBBox } from '@/lib/openwaters-ais';
+import { parseBbox } from '@/lib/layers/bbox';
+import {
+  aishubUsername as getAishubUsername,
+  getAishubInflight,
+  getAishubLastFetch,
+  getOpenwatersInflight,
+  getOpenwatersLastFetch,
+  getOpenwatersLastViewKey,
+  nextOpenwatersBoxIndex,
+  setAishubInflight,
+  setAishubLastFetch,
+  setOpenwatersInflight,
+  setOpenwatersLastFetch,
+  setOpenwatersLastViewKey,
+  shipsCache,
+  upsertShips,
+} from '@/lib/maritime-ais-cache';
 
 /**
  * OSIRIS — Maritime Intelligence
- * Real-time AIS vessel tracking via aisstream.io + Static global ports.
+ * Live AIS via Open Waters (keyless GeoJSON, https://openwaters.io/ais/) + optional
+ * AISHub webservice. Env: OPENWATERS_AIS_TOKEN (optional higher limits),
+ * AISHUB_USERNAME / AIS_API_KEY (optional AISHub member poll ≤1/min).
  */
 
 const PORTS = [
@@ -79,140 +99,131 @@ const CHOKEPOINTS = [
   { name: 'Lombok Strait', lat: -8.47, lng: 115.72, traffic: 'Alt Malacca', risk: 'LOW' },
 ];
 
-// --- Global AIS Stream Client (In-Memory Cache) ---
-// Note: In a true serverless environment, this state would reset per invocation.
-// For Next.js dev server or Node.js Docker container, this will persist.
+/** High-traffic corridors — each box stays under Open Waters' 100°² anonymous cap. */
+const AIS_BOXES: { latmin: number; latmax: number; lonmin: number; lonmax: number }[] = [
+  { latmin: 1.0, latmax: 3.0, lonmin: 103.0, lonmax: 104.5 }, // Singapore / Malacca
+  { latmin: 25.0, latmax: 27.5, lonmin: 54.0, lonmax: 57.5 }, // Hormuz
+  { latmin: 27.0, latmax: 32.0, lonmin: 32.0, lonmax: 33.5 }, // Suez
+  { latmin: 12.0, latmax: 14.0, lonmin: 42.5, lonmax: 44.0 }, // Bab el-Mandeb
+  { latmin: 8.0, latmax: 10.0, lonmin: -80.5, lonmax: -79.0 }, // Panama
+  { latmin: 22.0, latmax: 26.0, lonmin: 118.0, lonmax: 121.0 }, // Taiwan Strait
+  { latmin: 50.0, latmax: 53.0, lonmin: 0.0, lonmax: 5.0 }, // Channel / Rotterdam
+  { latmin: 33.0, latmax: 34.5, lonmin: -119.0, lonmax: -117.0 }, // LA/LB
+  { latmin: 34.8, latmax: 35.7, lonmin: 139.5, lonmax: 140.2 }, // Tokyo Bay
+  { latmin: 29.5, latmax: 30.0, lonmin: -95.5, lonmax: -94.5 }, // Houston
+  { latmin: 40.5, latmax: 42.5, lonmin: -72.0, lonmax: -69.5 }, // Southern New England
+];
 
-const globalForAis = globalThis as unknown as {
-  shipsCache: Map<number, any>;
-  isAisConnecting: boolean;
-};
-
-if (!globalForAis.shipsCache) {
-  globalForAis.shipsCache = new Map();
-  globalForAis.isAisConnecting = false;
-}
-
-const shipsCache = globalForAis.shipsCache;
-
-function connectAisStream() {
-  if (globalForAis.isAisConnecting) return;
-  const apiKey = process.env.AIS_API_KEY;
-  if (!apiKey) return;
-
-  globalForAis.isAisConnecting = true;
-  let ws: WebSocket;
-
-  try {
-    ws = new WebSocket("wss://stream.aisstream.io/v0/stream");
-  } catch (e) {
-    globalForAis.isAisConnecting = false;
-    return;
-  }
-
-  ws.on("open", () => {
-    globalForAis.isAisConnecting = false;
-    const subscriptionMessage = {
-      APIKey: apiKey,
-      // Target specific high-value SCM areas to ensure data delivery on free tier
-      BoundingBoxes: [
-        // Tokyo Bay
-        [[34.8, 139.5], [35.7, 140.2]],
-        // Hormuz
-        [[25.0, 54.0], [27.5, 57.5]],
-        // Suez Canal
-        [[27.0, 32.0], [32.0, 33.5]],
-        // Bab el-Mandeb
-        [[12.0, 42.5], [14.0, 44.0]],
-        // Panama Canal
-        [[8.0, -80.5], [10.0, -79.0]],
-        // Malacca / Singapore
-        [[1.0, 103.0], [3.0, 104.5]],
-        // Taiwan Strait
-        [[22.0, 118.0], [26.0, 121.0]],
-        // Rotterdam / English Channel
-        [[50.0, 0.0], [53.0, 5.0]],
-        // US West Coast (LA/LB)
-        [[33.0, -119.0], [34.5, -117.0]],
-        // Global fallback (often heavily sampled by aisstream)
-        [[-90, -180], [90, 180]]
-      ],
-      FilterMessageTypes: ["PositionReport", "ShipStaticData"]
-    };
-    ws.send(JSON.stringify(subscriptionMessage));
-  });
-
-  // Map AIS ship types to OSIRIS categories
-  const getOsirisShipType = (typeCode: number) => {
-    if (!typeCode) return 'cargo';
-    if (typeCode >= 80 && typeCode <= 89) return 'tanker';
-    if (typeCode >= 70 && typeCode <= 79) return 'cargo';
-    if (typeCode === 35) return 'military';
-    return 'cargo';
+function clampOwBbox(b: OpenWatersBBox): OpenWatersBBox {
+  // Anonymous ≤100°²; personal token claim is typically 400°².
+  const maxArea = process.env.OPENWATERS_AIS_TOKEN ? 400 : 100;
+  const latSpan = Math.max(0.01, b.latmax - b.latmin);
+  const lonSpan = Math.max(0.01, b.lonmax - b.lonmin);
+  const area = latSpan * lonSpan;
+  if (area <= maxArea) return b;
+  const scale = Math.sqrt(maxArea / area);
+  const latMid = (b.latmin + b.latmax) / 2;
+  const lonMid = (b.lonmin + b.lonmax) / 2;
+  const halfLat = (latSpan * scale) / 2;
+  const halfLon = (lonSpan * scale) / 2;
+  return {
+    latmin: latMid - halfLat,
+    latmax: latMid + halfLat,
+    lonmin: lonMid - halfLon,
+    lonmax: lonMid + halfLon,
   };
-
-  ws.on("message", (data) => {
-    try {
-      const parsed = JSON.parse(data.toString());
-      const mmsi = parsed.MetaData?.MMSI;
-      if (!mmsi) return;
-
-      const existing = shipsCache.get(mmsi) || {
-        id: mmsi, mmsi: mmsi, timestamp: Date.now()
-      };
-
-      // Extract Name from MetaData if available (present in most messages)
-      if (parsed.MetaData?.ShipName) {
-        existing.name = parsed.MetaData.ShipName.trim();
-      }
-
-      if (parsed.MessageType === "PositionReport" && parsed.Message?.PositionReport) {
-        const report = parsed.Message.PositionReport;
-        existing.lat = report.Latitude;
-        existing.lng = report.Longitude;
-        existing.speed = report.Sog;
-        existing.heading = report.TrueHeading || report.Cog;
-        existing.timestamp = Date.now();
-      } 
-      else if (parsed.MessageType === "ShipStaticData" && parsed.Message?.ShipStaticData) {
-        const staticData = parsed.Message.ShipStaticData;
-        existing.name = staticData.Name ? staticData.Name.trim() : existing.name;
-        existing.destination = staticData.Destination ? staticData.Destination.trim() : existing.destination;
-        existing.type = getOsirisShipType(staticData.Type);
-      }
-
-      // Only store if we have coordinates
-      if (existing.lat && existing.lng) {
-        shipsCache.set(mmsi, existing);
-      }
-
-      // Limit cache size to prevent memory leak (allow up to 20,000 ships)
-      if (shipsCache.size > 20000) {
-        const firstKey = shipsCache.keys().next().value;
-        if (firstKey) shipsCache.delete(firstKey);
-      }
-    } catch (e) {
-      // ignore parse errors
-    }
-  });
-
-  ws.on("close", () => {
-    globalForAis.isAisConnecting = false;
-    setTimeout(connectAisStream, 5000); // Reconnect
-  });
-
-  ws.on("error", () => {
-    ws.close();
-  });
 }
 
-// Start connection process asynchronously
-connectAisStream();
+function viewKey(b: OpenWatersBBox): string {
+  const r = (n: number) => Math.round(n * 20) / 20; // ~0.05° buckets
+  return `${r(b.latmin)},${r(b.lonmin)},${r(b.latmax)},${r(b.lonmax)}`;
+}
 
-// --- SCM Integration: VesselAPI Hybrid Fallback (Satellite AIS) ---
-let lastVesselApiFetch = 0;
-async function fetchVesselApiFallback() {
-  // Mock data removed per user request. We only rely on real live stream data.
+/** Open Waters — prefer map viewport, else rotate corridors (~12s). */
+async function refreshOpenWatersShips(view?: OpenWatersBBox | null): Promise<void> {
+  const now = Date.now();
+  const key = view ? viewKey(clampOwBbox(view)) : '';
+  const viewChanged = Boolean(view && key !== getOpenwatersLastViewKey());
+  // Always fetch when the camera moves to a new bucket; otherwise throttle.
+  const minGap = view ? 8_000 : 12_000;
+  if (!viewChanged && now - getOpenwatersLastFetch() < minGap) return;
+  const inflight = getOpenwatersInflight();
+  if (inflight) return inflight;
+
+  const job = (async () => {
+    setOpenwatersLastFetch(Date.now());
+    if (key) setOpenwatersLastViewKey(key);
+    const bbox = view
+      ? clampOwBbox(view)
+      : AIS_BOXES[nextOpenwatersBoxIndex(AIS_BOXES.length)]!;
+    try {
+      const ships = await fetchOpenWatersVessels(bbox);
+      if (ships.length) upsertShips(ships);
+    } catch (err) {
+      console.warn('[maritime] Open Waters fetch failed', err);
+    } finally {
+      setOpenwatersInflight(null);
+    }
+  })();
+
+  setOpenwatersInflight(job);
+  return job;
+}
+
+function shipsInView(view: OpenWatersBBox, pad = 0.2): OsirisShip[] {
+  const latmin = view.latmin - pad;
+  const latmax = view.latmax + pad;
+  const lonmin = view.lonmin - pad;
+  const lonmax = view.lonmax + pad;
+  const out: OsirisShip[] = [];
+  for (const ship of shipsCache.values()) {
+    if (ship.lat >= latmin && ship.lat <= latmax && ship.lng >= lonmin && ship.lng <= lonmax) {
+      out.push(ship);
+    }
+  }
+  return out;
+}
+
+/** Optional AISHub member poll ≤1/min. */
+async function refreshAishubShips(): Promise<void> {
+  const username = getAishubUsername();
+  if (!username) return;
+
+  const now = Date.now();
+  if (now - getAishubLastFetch() < 60_000) return;
+  const inflight = getAishubInflight();
+  if (inflight) return inflight;
+
+  const job = (async () => {
+    setAishubLastFetch(Date.now());
+    const boxIndex = Math.floor(Date.now() / 60_000) % AIS_BOXES.length;
+    const bbox = AIS_BOXES[boxIndex]!;
+    try {
+      const url = buildAishubUrl(username, bbox, 30);
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(45_000),
+        headers: { 'User-Agent': 'osiris-maritime/1.0', Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      if (!res.ok) return;
+      const text = await res.text();
+      if (!text.trim()) return; // rate-limit empty body
+      let data: unknown;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return;
+      }
+      upsertShips(mapAishubResponse(data));
+    } catch (err) {
+      console.warn('[maritime] AISHub fetch failed', err);
+    } finally {
+      setAishubInflight(null);
+    }
+  })();
+
+  setAishubInflight(job);
+  return job;
 }
 
 /* ── Response snapshot cache ──────────────────────────────────────────────
@@ -234,7 +245,7 @@ const globalForSnapshot = globalThis as unknown as {
   maritimeSnapshot?: { body: string; builtAt: number };
 };
 
-function buildSnapshot(now: number): string {
+function buildSnapshot(now: number, shipList?: OsirisShip[]): string {
   // Clean up stale ships (older than 10 minutes)
   for (const [mmsi, ship] of shipsCache.entries()) {
     if (now - ship.timestamp > 10 * 60 * 1000) {
@@ -242,7 +253,7 @@ function buildSnapshot(now: number): string {
     }
   }
 
-  const ships = Array.from(shipsCache.values());
+  const ships = shipList ?? Array.from(shipsCache.values());
 
   // Dynamically calculate live traffic (Fast approximation of Haversine)
   const getDistanceKm = (lat1: number, lng1: number, lat2: number, lng2: number) => {
@@ -321,11 +332,44 @@ export function clearMaritimeSnapshot(): void {
   delete globalForSnapshot.maritimeSnapshot;
 }
 
-export async function GET() {
-  // Trigger Hybrid Fallback
-  await fetchVesselApiFallback();
+export async function GET(req: NextRequest) {
+  const parsed = parseBbox(req.nextUrl.searchParams.get('bbox'));
+  // parseBbox rejects spans >40°; for maritime we still want a looser viewport.
+  let view: OpenWatersBBox | null = null;
+  if (parsed) {
+    view = {
+      latmin: parsed.south,
+      latmax: parsed.north,
+      lonmin: parsed.west,
+      lonmax: parsed.east,
+    };
+  } else {
+    const raw = req.nextUrl.searchParams.get('bbox');
+    if (raw) {
+      const parts = raw.split(',').map((s) => Number(s.trim()));
+      if (parts.length === 4 && parts.every(Number.isFinite)) {
+        const [west, south, east, north] = parts;
+        if (west < east && south < north) {
+          view = { latmin: south, latmax: north, lonmin: west, lonmax: east };
+        }
+      }
+    }
+  }
+
+  await Promise.all([refreshOpenWatersShips(view), refreshAishubShips()]);
 
   const now = Date.now();
+  // Viewport: return ships in/near the frame (after fetching that box).
+  if (view) {
+    const body = buildSnapshot(now, shipsInView(view));
+    return new NextResponse(body, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=3, s-maxage=3, stale-while-revalidate=10',
+      },
+    });
+  }
+
   const cached = globalForSnapshot.maritimeSnapshot;
 
   const snapshot = cached && now - cached.builtAt < SNAPSHOT_TTL_MS
@@ -338,9 +382,6 @@ export async function GET() {
   return new NextResponse(snapshot.body, {
     headers: {
       'Content-Type': 'application/json',
-      // The server would not have produced anything newer inside this window
-      // either, so let the browser and any CDN in front of it skip the round
-      // trip entirely rather than re-asking every 10s per open tab.
       'Cache-Control': `public, max-age=${maxAgeSeconds}, s-maxage=${maxAgeSeconds}, stale-while-revalidate=15`,
     },
   });

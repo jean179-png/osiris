@@ -1,0 +1,2 @@
+﻿87b4e33 fix(layers): expand west with floor in roundBbox
+14fc328 feat(layers): shared bbox, cache, and GeoJSON helpers

@@ -24,8 +24,14 @@ import { dirname, join } from 'node:path';
 export type Camera = Record<string, unknown>;
 export type RegionCameras = Record<string, Camera[]>;
 
-const SNAPSHOT_VERSION = 2;
-const INVALIDATED_LEGACY_REGIONS = new Set(['texas', 'florida', 'georgia', 'northcarolina', 'canada']);
+const SNAPSHOT_VERSION = 4;
+/* Regions whose on-disk catalogue shape changed enough that a restore would
+   paper over a newer fetcher (e.g. Prague city-life cams, Haarlem Ventusky,
+   RI downtown lives, UK Midlands). Bumping SNAPSHOT_VERSION migrates them off. */
+const INVALIDATED_LEGACY_REGIONS = new Set([
+  'texas', 'florida', 'georgia', 'northcarolina', 'canada',
+  'czechia', 'netherlands', 'spain', 'uk', 'rhodeisland',
+]);
 
 /** Overridable so a test never writes into the real cache directory. */
 export const snapshotPath = () =>

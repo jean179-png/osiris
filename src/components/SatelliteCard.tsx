@@ -1,6 +1,7 @@
 'use client';
 
 import { ExternalLink, Orbit, Satellite, X } from 'lucide-react';
+import FloatingWindow from '@/components/FloatingWindow';
 
 /**
  * OSIRIS — selected satellite readout
@@ -87,16 +88,20 @@ export default function SatelliteCard({ sat, onClose }: { sat: SatelliteDetail; 
   const shell = regime(sat.alt);
 
   return (
-    <div
-      className="pointer-events-auto absolute left-2 right-2 top-16 z-[350] overflow-hidden rounded-lg border bg-[var(--bg-panel)] shadow-[0_6px_20px_rgba(0,0,0,0.45)] backdrop-blur-2xl md:left-[72px] md:right-auto md:top-[88px] md:w-[248px]"
-      style={{ borderColor: `${accent}33` }}
-      role="dialog"
+    <FloatingWindow
+      storageKey="satellite-card"
       aria-label={`Satellite ${sat.name}`}
+      zIndex={350}
+      minWidth={220}
+      minHeight={200}
+      defaultRect={{ x: 72, y: 88, w: 248, h: 320 }}
+      className="rounded-lg border bg-[var(--bg-panel)] shadow-[0_6px_20px_rgba(0,0,0,0.45)] backdrop-blur-2xl"
+      style={{ borderColor: `${accent}33` }}
     >
       {/* A rule in the satellite's own colour, matching its marker and its track. */}
-      <div className="h-px w-full" style={{ background: `${accent}99` }} />
+      <div className="h-px w-full shrink-0" style={{ background: `${accent}99` }} />
 
-      <div className="flex items-start gap-2 px-2.5 pt-2.5">
+      <div data-drag-handle className="flex cursor-grab items-start gap-2 px-2.5 pt-2.5 active:cursor-grabbing">
         <Satellite className="mt-[2px] h-3.5 w-3.5 flex-shrink-0" style={{ color: accent }} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-[12px] font-bold leading-tight tracking-wide text-[var(--text-heading)]" title={sat.name}>
@@ -147,12 +152,12 @@ export default function SatelliteCard({ sat, onClose }: { sat: SatelliteDetail; 
           href={`https://www.n2yo.com/satellite/?s=${encodeURIComponent(sat.noradId)}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center justify-center gap-1.5 border-t px-2.5 py-2 text-[9px] font-mono tracking-[0.15em] transition-colors"
+          className="mt-auto flex items-center justify-center gap-1.5 border-t px-2.5 py-2 text-[9px] font-mono tracking-[0.15em] transition-colors"
           style={{ borderColor: 'var(--border-secondary)', color: accent, background: `${accent}0a` }}
         >
           TRACK ON N2YO <ExternalLink className="h-2.5 w-2.5" />
         </a>
       )}
-    </div>
+    </FloatingWindow>
   );
 }

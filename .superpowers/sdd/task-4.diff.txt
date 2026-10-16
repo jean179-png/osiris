@@ -1,0 +1,270 @@
+﻿diff --git a/src/app/api/layers/uap/route.ts b/src/app/api/layers/uap/route.ts
+new file mode 100644
+index 0000000..9aa713d
+--- /dev/null
++++ b/src/app/api/layers/uap/route.ts
+@@ -0,0 +1,13 @@
++import { NextRequest, NextResponse } from 'next/server';
++import { parseBbox } from '@/lib/layers/bbox';
++import { emptyFc } from '@/lib/layers/geojson';
++import { getUapForBbox } from '@/lib/layers/uap';
++
++export async function GET(req: NextRequest) {
++  const bbox = parseBbox(req.nextUrl.searchParams.get('bbox'));
++  if (!bbox) return NextResponse.json(emptyFc());
++  const fc = await getUapForBbox(bbox);
++  return NextResponse.json(fc, {
++    headers: { 'Cache-Control': 'public, s-maxage=1800' },
++  });
++}
+diff --git a/src/lib/layers/uap.test.ts b/src/lib/layers/uap.test.ts
+new file mode 100644
+index 0000000..f7d307b
+--- /dev/null
++++ b/src/lib/layers/uap.test.ts
+@@ -0,0 +1,109 @@
++import { describe, it, expect } from 'vitest';
++import { filterUapRecordsByBbox, mapUapRecordsToFc } from './uap';
++import type { BBox } from './types';
++
++const FIXTURE = [
++  {
++    id: 'nuforc-a',
++    datetime: '2015-01-01',
++    lat: 42.35,
++    lng: -71.05,
++    shape: 'light',
++    city: 'Boston',
++    country: 'USA',
++    sourceUrl: 'https://nuforc.org/sighting/?id=1',
++  },
++  {
++    id: 'nuforc-b',
++    datetime: '2016-06-15',
++    lat: 41.82,
++    lng: -71.41,
++    shape: 'disk',
++    city: 'Providence',
++    country: 'USA',
++    sourceUrl: 'https://nuforc.org/sighting/?id=2',
++  },
++  {
++    id: 'nuforc-c',
++    datetime: '2018-03-20',
++    lat: 34.05,
++    lng: -118.25,
++    shape: 'fireball',
++    city: 'Los Angeles',
++    country: 'USA',
++    sourceUrl: 'https://nuforc.org/sighting/?id=3',
++  },
++  {
++    id: 'nuforc-bad',
++    datetime: '2019-01-01',
++    lat: 'n/a',
++    lng: -71,
++    shape: 'other',
++    country: 'USA',
++  },
++];
++
++const NE_BBOX: BBox = { west: -72, south: 41, east: -70, north: 43 };
++
++describe('filterUapRecordsByBbox', () => {
++  it('keeps only points inside bbox', () => {
++    const fc = filterUapRecordsByBbox(FIXTURE, NE_BBOX);
++    expect(fc.features).toHaveLength(2);
++    const ids = fc.features.map((f) => f.id);
++    expect(ids).toEqual(['nuforc-a', 'nuforc-b']);
++  });
++
++  it('sets city precision and NUFORC attribution', () => {
++    const fc = filterUapRecordsByBbox(FIXTURE, NE_BBOX);
++    const p = fc.features[0].properties;
++    expect(p?.kind).toBe('ground_uap');
++    expect(p?.precision).toBe('city');
++    expect(p?.attribution).toBe('NUFORC via The UAP Atlas');
++    expect(p?.city).toBe('Boston');
++    expect(p?.shape).toBe('light');
++    expect(p?.date).toBe('2015-01-01');
++    expect(p?.sourceUrl).toBe('https://nuforc.org/sighting/?id=1');
++  });
++
++  it('returns empty for empty bbox hit / bad input', () => {
++    const emptyBbox: BBox = { west: 0, south: 0, east: 1, north: 1 };
++    expect(filterUapRecordsByBbox(FIXTURE, emptyBbox).features).toHaveLength(0);
++    expect(filterUapRecordsByBbox(null, NE_BBOX).features).toHaveLength(0);
++    expect(filterUapRecordsByBbox([], NE_BBOX).features).toHaveLength(0);
++  });
++
++  it('skips rows without finite coordinates', () => {
++    const fc = filterUapRecordsByBbox(FIXTURE, {
++      west: -180,
++      south: -90,
++      east: 180,
++      north: 90,
++    });
++    // world bbox but still skips bad coords; LA + Boston + Providence = 3
++    expect(fc.features).toHaveLength(3);
++  });
++
++  it('caps at 2000 features', () => {
++    const many = Array.from({ length: 2500 }, (_, i) => ({
++      id: `nuforc-${i}`,
++      lat: 42,
++      lng: -71,
++      shape: 'light',
++      country: 'USA',
++    }));
++    const fc = filterUapRecordsByBbox(many, NE_BBOX);
++    expect(fc.features).toHaveLength(2000);
++  });
++});
++
++describe('mapUapRecordsToFc', () => {
++  it('maps all valid rows without bbox filter', () => {
++    const fc = mapUapRecordsToFc(FIXTURE);
++    expect(fc.features).toHaveLength(3);
++  });
++
++  it('returns empty for missing records', () => {
++    expect(mapUapRecordsToFc({}).features).toHaveLength(0);
++    expect(mapUapRecordsToFc(null).features).toHaveLength(0);
++  });
++});
+diff --git a/src/lib/layers/uap.ts b/src/lib/layers/uap.ts
+new file mode 100644
+index 0000000..952d316
+--- /dev/null
++++ b/src/lib/layers/uap.ts
+@@ -0,0 +1,130 @@
++import type { Feature, FeatureCollection } from 'geojson';
++import type { BBox } from './types';
++import { cachedFc } from './cache';
++import { pointFeature, emptyFc, capFeatures } from './geojson';
++
++const EXPORT_CACHE_KEY = 'uap:export:v1';
++const EXPORT_TTL_MS = 30 * 60_000;
++const PAGE_LIMIT = 5000;
++const FEATURE_CAP = 2000;
++const EXPORT_URL =
++  'https://theuapatlas.com/api/export?format=json&from=2015&to=2026';
++
++const ATTRIBUTION = 'NUFORC via The UAP Atlas';
++
++/** Row shape from The UAP Atlas /api/export (NUFORC-derived). */
++export type UapRecord = {
++  id?: string;
++  datetime?: string;
++  lat?: number;
++  lng?: number;
++  shape?: string;
++  city?: string;
++  country?: string;
++  sourceUrl?: string;
++  locationPrecision?: string;
++  durationSec?: number;
++  status?: string;
++};
++
++function pointInBbox(lng: number, lat: number, bbox: BBox): boolean {
++  return lng >= bbox.west && lng <= bbox.east && lat >= bbox.south && lat <= bbox.north;
++}
++
++function recordToFeature(row: UapRecord, index: number): Feature | null {
++  const lat = row.lat;
++  const lng = row.lng;
++  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
++  const id = row.id ?? `uap-${index}`;
++  return pointFeature(id, lng as number, lat as number, {
++    kind: 'ground_uap',
++    date: row.datetime ?? null,
++    shape: row.shape ?? null,
++    city: row.city ?? null,
++    country: row.country ?? null,
++    sourceUrl: row.sourceUrl ?? null,
++    precision: 'city',
++    attribution: ATTRIBUTION,
++  });
++}
++
++/** Map export rows to a FeatureCollection (no bbox filter, no cap). */
++export function mapUapRecordsToFc(records: unknown): FeatureCollection {
++  if (!Array.isArray(records)) return emptyFc();
++  const features: Feature[] = [];
++  for (let i = 0; i < records.length; i++) {
++    const f = recordToFeature(records[i] as UapRecord, i);
++    if (f) features.push(f);
++  }
++  return { type: 'FeatureCollection', features };
++}
++
++/** Filter fixture/export rows by bbox ΓåÆ capped FeatureCollection for tests and route. */
++export function filterUapRecordsByBbox(
++  records: unknown,
++  bbox: BBox,
++): FeatureCollection {
++  if (!Array.isArray(records)) return emptyFc();
++  const features: Feature[] = [];
++  for (let i = 0; i < records.length; i++) {
++    const row = records[i] as UapRecord;
++    const lat = row.lat;
++    const lng = row.lng;
++    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
++    if (!pointInBbox(lng as number, lat as number, bbox)) continue;
++    const f = recordToFeature(row, i);
++    if (f) features.push(f);
++  }
++  return capFeatures({ type: 'FeatureCollection', features }, FEATURE_CAP);
++}
++
++function filterFcByBbox(fc: FeatureCollection, bbox: BBox): FeatureCollection {
++  const features = fc.features.filter((f) => {
++    if (f.geometry?.type !== 'Point') return false;
++    const [lng, lat] = f.geometry.coordinates;
++    return Number.isFinite(lng) && Number.isFinite(lat) && pointInBbox(lng, lat, bbox);
++  });
++  return capFeatures({ type: 'FeatureCollection', features }, FEATURE_CAP);
++}
++
++async function fetchAllUapRecords(): Promise<UapRecord[]> {
++  const all: UapRecord[] = [];
++  let offset = 0;
++  let total = Infinity;
++  while (offset < total) {
++    const url = `${EXPORT_URL}&limit=${PAGE_LIMIT}&offset=${offset}`;
++    const res = await fetch(url, {
++      signal: AbortSignal.timeout(25_000),
++      headers: {
++        'User-Agent': 'osiris-layers/1.0',
++        Accept: 'application/json',
++      },
++    });
++    if (!res.ok) throw new Error(`uap export HTTP ${res.status}`);
++    const data = await res.json();
++    const records = Array.isArray(data?.records) ? (data.records as UapRecord[]) : [];
++    if (typeof data?.total === 'number') total = data.total;
++    else total = offset + records.length;
++    all.push(...records);
++    if (records.length === 0 || records.length < PAGE_LIMIT) break;
++    offset += PAGE_LIMIT;
++  }
++  return all;
++}
++
++async function getCachedExportFc(): Promise<FeatureCollection> {
++  return cachedFc(EXPORT_CACHE_KEY, EXPORT_TTL_MS, async () => {
++    const records = await fetchAllUapRecords();
++    return mapUapRecordsToFc(records);
++  });
++}
++
++/** Fetch/cache full export, then filter by bbox in memory. Soft-fails to empty FC. */
++export async function getUapForBbox(bbox: BBox): Promise<FeatureCollection> {
++  try {
++    const all = await getCachedExportFc();
++    return filterFcByBbox(all, bbox);
++  } catch {
++    return emptyFc();
++  }
++}

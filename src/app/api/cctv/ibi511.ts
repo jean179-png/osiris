@@ -220,8 +220,11 @@ export async function loadIbi511Cameras(cfg: Ibi511Source): Promise<CctvCamera[]
   // The first page also tells us how many there are in total.
   const first = await fetchPage(cfg, 0);
   const seen = new Map<number, CctvCamera>();
+  /** Rows received from upstream, before blocked/disabled filters. */
+  let rowsReceived = 0;
 
   const ingest = (rows: Ibi511Record[]) => {
+    rowsReceived += rows.length;
     for (const rec of rows) {
       const cam = mapIbi511Record(rec, cfg);
       if (cam) seen.set(rec.id, cam);
@@ -258,9 +261,13 @@ export async function loadIbi511Cameras(cfg: Ibi511Source): Promise<CctvCamera[]
      and served that for the next half hour. Throwing hands the decision to
      sourceCache, which keeps the last good index instead — none of these
      feeds drops rows of its own accord, so anything materially short of
-     `recordsTotal` is pages we did not get. */
-  if (first.total > 0 && cams.length < first.total * 0.95) {
-    throw new Error(`${cfg.source} short read: ${cams.length} of ${first.total}`);
+     `recordsTotal` is pages we did not get.
+
+     Compare rows *received*, not cameras kept: blocked/disabled/out-of-bounds
+     rows still arrived. Pennsylvania alone drops ~170 blocked sites, which
+     used to trip this check even on a complete page download. */
+  if (first.total > 0 && rowsReceived < first.total * 0.95) {
+    throw new Error(`${cfg.source} short read: ${rowsReceived} rows of ${first.total} (kept ${cams.length})`);
   }
 
   console.log(`[OSIRIS] ${cfg.source} cameras: ${cams.length} of ${first.total}`);

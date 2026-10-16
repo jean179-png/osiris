@@ -1,0 +1,268 @@
+﻿diff --git a/desktop/lib/spawn-next.mjs b/desktop/lib/spawn-next.mjs
+new file mode 100644
+index 0000000..293155a
+--- /dev/null
++++ b/desktop/lib/spawn-next.mjs
+@@ -0,0 +1,28 @@
++import { spawn } from 'node:child_process';
++import { join } from 'node:path';
++
++export function buildChildEnv(baseEnv, desktopEnv, { host, port, userData, cacheDir }) {
++  return {
++    ...baseEnv,
++    ...desktopEnv,
++    NODE_ENV: 'production',
++    HOSTNAME: host,
++    PORT: String(port),
++    OSIRIS_CCTV_SNAPSHOT: join(cacheDir, 'cctv-catalog.json'),
++    OSIRIS_NOMINATIM_CACHE: join(cacheDir, 'nominatim.json'),
++    // Keep userData available for future features
++    OSIRIS_USER_DATA: userData,
++  };
++}
++
++export function startNextServer({ standaloneDir, env, nodeBinary = process.execPath }) {
++  // When running under Electron, process.execPath is Electron ΓÇö do NOT use it for Next.
++  // Caller must pass a real Node binary path (see main.mjs).
++  const serverJs = join(standaloneDir, 'server.js');
++  return spawn(nodeBinary, [serverJs], {
++    cwd: standaloneDir,
++    env,
++    stdio: ['ignore', 'pipe', 'pipe'],
++    windowsHide: true,
++  });
++}
+diff --git a/desktop/lib/spawn-next.test.mjs b/desktop/lib/spawn-next.test.mjs
+new file mode 100644
+index 0000000..1cbb74b
+--- /dev/null
++++ b/desktop/lib/spawn-next.test.mjs
+@@ -0,0 +1,22 @@
++import { describe, it, expect } from 'vitest';
++import { buildChildEnv } from './spawn-next.mjs';
++
++describe('buildChildEnv', () => {
++  it('forces loopback host/port and injects cache paths', () => {
++    const env = buildChildEnv(
++      { PATH: '/usr/bin', HOSTNAME: '0.0.0.0' },
++      { AIS_API_KEY: 'x' },
++      {
++        host: '127.0.0.1',
++        port: 41234,
++        userData: '/tmp/osiris-data',
++        cacheDir: '/tmp/osiris-cache',
++      },
++    );
++    expect(env.HOSTNAME).toBe('127.0.0.1');
++    expect(env.PORT).toBe('41234');
++    expect(env.AIS_API_KEY).toBe('x');
++    expect(env.OSIRIS_CCTV_SNAPSHOT).toContain('osiris-cache');
++    expect(env.OSIRIS_NOMINATIM_CACHE).toContain('osiris-cache');
++  });
++});
+diff --git a/desktop/main.mjs b/desktop/main.mjs
+index 6b72e98..940412d 100644
+--- a/desktop/main.mjs
++++ b/desktop/main.mjs
+@@ -1,13 +1,35 @@
+-import { app, BrowserWindow } from 'electron';
++import { app, BrowserWindow, dialog } from 'electron';
++import { spawn } from 'node:child_process';
++import { mkdirSync } from 'node:fs';
+ import { dirname, join } from 'node:path';
+ import { fileURLToPath } from 'node:url';
+ import { findFreePort } from './lib/port.mjs';
+ import { waitForHealth } from './lib/health.mjs';
+ import { loadDesktopEnv } from './lib/env.mjs';
++import { resolveStandaloneDir } from './lib/paths.mjs';
++import { buildChildEnv, startNextServer } from './lib/spawn-next.mjs';
+ 
+ const __dirname = dirname(fileURLToPath(import.meta.url));
++const LOOPBACK = '127.0.0.1';
+ 
+-function createMainWindow() {
++/** @type {import('node:child_process').ChildProcess | null} */
++let nextChild = null;
++/** @type {string | null} */
++let appUrl = null;
++let quitting = false;
++
++function resolveNodeBinary() {
++  if (app.isPackaged) {
++    return join(
++      process.resourcesPath,
++      'node',
++      process.platform === 'win32' ? 'node.exe' : 'node',
++    );
++  }
++  return process.env.OSIRIS_NODE || 'node';
++}
++
++function createMainWindow(url) {
+   const win = new BrowserWindow({
+     width: 1280,
+     height: 800,
+@@ -19,10 +41,128 @@ function createMainWindow() {
+     },
+   });
+ 
+-  win.loadURL('data:text/html,<h1>Osiris desktop shell</h1>');
++  win.loadURL(url);
+   return win;
+ }
+ 
++function killNextChild() {
++  const child = nextChild;
++  if (!child || child.killed || child.exitCode != null) {
++    nextChild = null;
++    return;
++  }
++  const pid = child.pid;
++  nextChild = null;
++
++  if (process.platform === 'win32' && pid) {
++    try {
++      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
++        stdio: 'ignore',
++        windowsHide: true,
++      });
++    } catch {
++      try {
++        child.kill();
++      } catch {
++        /* ignore */
++      }
++    }
++    return;
++  }
++
++  try {
++    child.kill('SIGTERM');
++  } catch {
++    /* ignore */
++  }
++  setTimeout(() => {
++    if (child.exitCode == null && !child.killed) {
++      try {
++        child.kill('SIGKILL');
++      } catch {
++        /* ignore */
++      }
++    }
++  }, 2000);
++}
++
++function failAndQuit(title, message) {
++  try {
++    dialog.showErrorBox(title, message);
++  } catch {
++    console.error(title, message);
++  }
++  killNextChild();
++  app.quit();
++}
++
++async function bootProduction() {
++  const userData = app.getPath('userData');
++  const cacheDir = join(userData, 'cache');
++  mkdirSync(cacheDir, { recursive: true });
++
++  const port = await findFreePort(LOOPBACK);
++  const desktopEnv = loadDesktopEnv(userData);
++  const env = buildChildEnv(process.env, desktopEnv, {
++    host: LOOPBACK,
++    port,
++    userData,
++    cacheDir,
++  });
++
++  const standaloneDir = resolveStandaloneDir({
++    isPackaged: app.isPackaged,
++    resourcesPath: process.resourcesPath,
++    getAppPath: () => app.getAppPath(),
++  });
++
++  const nodeBinary = resolveNodeBinary();
++  const child = startNextServer({ standaloneDir, env, nodeBinary });
++  nextChild = child;
++
++  child.stdout?.on('data', (buf) => {
++    console.log(`[next] ${String(buf).trimEnd()}`);
++  });
++  child.stderr?.on('data', (buf) => {
++    console.error(`[next] ${String(buf).trimEnd()}`);
++  });
++  child.on('error', (err) => {
++    if (!quitting) {
++      failAndQuit('Osiris failed to start', err?.message || String(err));
++    }
++  });
++  child.on('exit', (code, signal) => {
++    if (!quitting && appUrl == null) {
++      failAndQuit(
++        'Osiris failed to start',
++        `Next server exited early (code=${code}, signal=${signal})`,
++      );
++    }
++  });
++
++  const healthUrl = `http://${LOOPBACK}:${port}/api/health`;
++  await waitForHealth(healthUrl);
++  appUrl = `http://${LOOPBACK}:${port}`;
++  createMainWindow(appUrl);
++}
++
++async function bootDevShell() {
++  appUrl = process.env.OSIRIS_DEV_URL || `http://${LOOPBACK}:3000`;
++  createMainWindow(appUrl);
++}
++
++async function boot() {
++  try {
++    if (process.env.OSIRIS_DESKTOP_DEV === '1') {
++      await bootDevShell();
++    } else {
++      await bootProduction();
++    }
++  } catch (err) {
++    failAndQuit('Osiris failed to start', err?.message || String(err));
++  }
++}
++
+ if (!app.requestSingleInstanceLock()) {
+   app.quit();
+ } else {
+@@ -36,19 +176,29 @@ if (!app.requestSingleInstanceLock()) {
+     }
+   });
+ 
+-  app.whenReady().then(() => {
+-    createMainWindow();
++  app.whenReady().then(() => boot());
++
++  app.on('before-quit', () => {
++    quitting = true;
++    killNextChild();
++  });
++
++  app.on('will-quit', () => {
++    quitting = true;
++    killNextChild();
+   });
+ 
+   app.on('window-all-closed', () => {
++    quitting = true;
++    killNextChild();
+     if (process.platform !== 'darwin') {
+       app.quit();
+     }
+   });
+ 
+   app.on('activate', () => {
+-    if (BrowserWindow.getAllWindows().length === 0) {
+-      createMainWindow();
++    if (BrowserWindow.getAllWindows().length === 0 && appUrl) {
++      createMainWindow(appUrl);
+     }
+   });
+ }

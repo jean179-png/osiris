@@ -1,0 +1,58 @@
+[
+  {
+    "id": "amtrak",
+    "name": "Amtrak",
+    "vehicleUrl": "https://asm-backend.transitdocs.com/gtfs/amtrak",
+    "alertUrl": "https://asm-backend.transitdocs.com/gtfs/amtrak/alerts",
+    "staticGtfsUrl": "https://content.amtrak.com/content/gtfs/GTFS.zip",
+    "bbox": [-125.0, 24.0, -66.0, 49.5]
+  },
+  {
+    "id": "via-rail",
+    "name": "VIA Rail",
+    "vehicleUrl": "https://asm-backend.transitdocs.com/gtfs/via",
+    "staticGtfsUrl": "https://www.viarail.ca/sites/all/files/gtfs/viarail.zip",
+    "bbox": [-140.0, 41.0, -52.0, 63.0]
+  },
+  {
+    "id": "septa-rail",
+    "name": "SEPTA Regional Rail",
+    "vehicleUrl": "https://www3.septa.org/gtfsrt/septarail-pa-us/Vehicle/rtVehiclePosition.pb",
+    "alertUrl": "https://www3.septa.org/gtfsrt/septarail-pa-us/Alerts/gtfsrt_alerts.pb",
+    "staticGtfsUrl": "https://www3.septa.org/developer/google_rail.zip",
+    "bbox": [-76.0, 39.5, -74.5, 40.6]
+  },
+  {
+    "id": "caltrain",
+    "name": "Caltrain",
+    "vehicleUrl": "https://api.511.org/transit/vehiclepositions?agency=CT",
+    "alertUrl": "https://api.511.org/transit/servicealerts?agency=CT",
+    "staticGtfsUrl": "https://www.caltrain.com/GTFS/google_transit.zip",
+    "bbox": [-122.6, 37.0, -121.5, 37.9],
+    "apiKeyEnv": "CALTRAIN_511_API_KEY"
+  },
+  {
+    "id": "metra",
+    "name": "Metra",
+    "vehicleUrl": "https://gtfsapi.metrarail.com/gtfs/raw/vehiclePositions",
+    "staticGtfsUrl": "https://schedules.metrarail.com/gtfs/schedule.zip",
+    "bbox": [-88.6, 41.3, -87.2, 42.6],
+    "apiKeyEnv": "METRA_API_KEY"
+  },
+  {
+    "id": "nj-transit-rail",
+    "name": "NJ Transit Rail",
+    "vehicleUrl": "https://rsapi.njtransit.com/api/GTFSRT/VehiclePositions",
+    "staticGtfsUrl": "https://content.njtransit.com/public/developers-resources/rail_data.zip",
+    "bbox": [-75.6, 38.9, -73.9, 41.4],
+    "apiKeyEnv": "NJT_API_KEY"
+  },
+  {
+    "id": "metro-north",
+    "name": "Metro-North",
+    "vehicleUrl": "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr",
+    "staticGtfsUrl": "http://web.mta.info/developers/data/mnr/google_transit.zip",
+    "bbox": [-74.3, 40.5, -72.5, 42.0],
+    "apiKeyEnv": "MTA_API_KEY"
+  }
+]

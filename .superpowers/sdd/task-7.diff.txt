@@ -1,0 +1,787 @@
+﻿diff --git a/public/data/layers/municipal-endpoints.json b/public/data/layers/municipal-endpoints.json
+new file mode 100644
+index 0000000..613d019
+--- /dev/null
++++ b/public/data/layers/municipal-endpoints.json
+@@ -0,0 +1,126 @@
++[
++  {
++    "id": "nyc",
++    "name": "New York City",
++    "bbox": [-74.3, 40.4, -73.6, 41.0],
++    "threeOneOne": {
++      "type": "socrata",
++      "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
++      "latField": "latitude",
++      "lngField": "longitude",
++      "idField": "unique_key",
++      "nameField": "complaint_type",
++      "statusField": "status",
++      "openedField": "created_date",
++      "addressField": "incident_address",
++      "limit": 1000
++    }
++  },
++  {
++    "id": "chicago",
++    "name": "Chicago",
++    "bbox": [-87.95, 41.64, -87.5, 42.03],
++    "threeOneOne": {
++      "type": "socrata",
++      "url": "https://data.cityofchicago.org/resource/v6vf-nfxy.json",
++      "latField": "latitude",
++      "lngField": "longitude",
++      "idField": "sr_number",
++      "nameField": "sr_type",
++      "statusField": "status",
++      "openedField": "created_date",
++      "addressField": "street_address",
++      "limit": 1000
++    },
++    "vacant": {
++      "type": "socrata",
++      "url": "https://data.cityofchicago.org/resource/yama-9had.json",
++      "latField": "latitude",
++      "lngField": "longitude",
++      "idField": "service_request_number",
++      "nameField": "service_request_type",
++      "statusField": "is_the_building_currently_vacant_or_occupied_",
++      "openedField": "date_service_request_was_received",
++      "addressField": "address_street_name",
++      "limit": 1000
++    }
++  },
++  {
++    "id": "sf",
++    "name": "San Francisco",
++    "bbox": [-122.52, 37.7, -122.35, 37.84],
++    "threeOneOne": {
++      "type": "socrata",
++      "url": "https://data.sfgov.org/resource/vw6y-z8j6.json",
++      "latField": "lat",
++      "lngField": "long",
++      "idField": "service_request_id",
++      "nameField": "service_name",
++      "statusField": "status_description",
++      "openedField": "requested_datetime",
++      "addressField": "address",
++      "limit": 1000
++    }
++  },
++  {
++    "id": "philadelphia",
++    "name": "Philadelphia",
++    "bbox": [-75.28, 39.86, -74.95, 40.15],
++    "threeOneOne": {
++      "type": "arcgis",
++      "url": "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/public_cases_fc/FeatureServer/0/query",
++      "latField": "y",
++      "lngField": "x",
++      "idField": "service_request_id",
++      "nameField": "service_name",
++      "statusField": "status",
++      "openedField": "requested_datetime",
++      "addressField": "address",
++      "limit": 1000
++    },
++    "vacant": {
++      "type": "arcgis",
++      "url": "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Vacant_Indicators_Points/FeatureServer/0/query",
++      "latField": "y",
++      "lngField": "x",
++      "idField": "objectid",
++      "nameField": "address",
++      "addressField": "address",
++      "limit": 1000
++    }
++  },
++  {
++    "id": "austin",
++    "name": "Austin",
++    "bbox": [-97.95, 30.1, -97.55, 30.55],
++    "threeOneOne": {
++      "type": "socrata",
++      "url": "https://data.austintexas.gov/resource/xwdj-i9he.json",
++      "latField": "sr_location_lat",
++      "lngField": "sr_location_long",
++      "idField": "sr_number",
++      "nameField": "sr_type_desc",
++      "statusField": "sr_status_desc",
++      "openedField": "sr_created_date",
++      "addressField": "sr_location",
++      "limit": 1000
++    }
++  },
++  {
++    "id": "la",
++    "name": "Los Angeles",
++    "bbox": [-118.67, 33.7, -118.15, 34.34],
++    "threeOneOne": {
++      "type": "socrata",
++      "url": "https://data.lacity.org/resource/rq3b-xjk8.json",
++      "latField": "latitude",
++      "lngField": "longitude",
++      "idField": "srnumber",
++      "nameField": "requesttype",
++      "statusField": "status",
++      "openedField": "createddate",
++      "addressField": "address",
++      "limit": 1000
++    }
++  }
++]
+diff --git a/src/app/api/layers/civic-311/route.ts b/src/app/api/layers/civic-311/route.ts
+new file mode 100644
+index 0000000..9b01505
+--- /dev/null
++++ b/src/app/api/layers/civic-311/route.ts
+@@ -0,0 +1,49 @@
++import { readFile } from 'node:fs/promises';
++import { join } from 'node:path';
++import { NextRequest, NextResponse } from 'next/server';
++import { parseBbox, bboxKey } from '@/lib/layers/bbox';
++import { cachedFc } from '@/lib/layers/cache';
++import { emptyFc } from '@/lib/layers/geojson';
++import {
++  citiesForBbox,
++  fetchMunicipalEndpoint,
++  mergeMunicipalFc,
++  type MunicipalCity,
++} from '@/lib/layers/municipal';
++
++const REGISTRY_PATH = join(process.cwd(), 'public', 'data', 'layers', 'municipal-endpoints.json');
++const MIN_ZOOM = 10;
++const TTL_MS = 3 * 60_000;
++
++async function loadRegistry(): Promise<MunicipalCity[]> {
++  try {
++    const raw = await readFile(REGISTRY_PATH, 'utf8');
++    const data = JSON.parse(raw) as unknown;
++    return Array.isArray(data) ? (data as MunicipalCity[]) : [];
++  } catch {
++    return [];
++  }
++}
++
++export async function GET(req: NextRequest) {
++  const bbox = parseBbox(req.nextUrl.searchParams.get('bbox'));
++  if (!bbox) return NextResponse.json(emptyFc());
++
++  const zRaw = req.nextUrl.searchParams.get('z');
++  const z = zRaw != null ? Number(zRaw) : NaN;
++  if (!Number.isFinite(z) || z < MIN_ZOOM) {
++    return NextResponse.json(emptyFc());
++  }
++
++  const key = bboxKey('civic-311', bbox);
++  const fc = await cachedFc(key, TTL_MS, async () => {
++    const registry = await loadRegistry();
++    const cities = citiesForBbox(registry, bbox).filter((c) => c.threeOneOne);
++    if (cities.length === 0) return emptyFc();
++    const parts = await Promise.all(
++      cities.map((c) => fetchMunicipalEndpoint(c, c.threeOneOne!, 'ground_civic_311', bbox)),
++    );
++    return mergeMunicipalFc(parts);
++  });
++  return NextResponse.json(fc, { headers: { 'Cache-Control': 'public, s-maxage=60' } });
++}
+diff --git a/src/app/api/layers/vacant/route.ts b/src/app/api/layers/vacant/route.ts
+new file mode 100644
+index 0000000..58cc912
+--- /dev/null
++++ b/src/app/api/layers/vacant/route.ts
+@@ -0,0 +1,49 @@
++import { readFile } from 'node:fs/promises';
++import { join } from 'node:path';
++import { NextRequest, NextResponse } from 'next/server';
++import { parseBbox, bboxKey } from '@/lib/layers/bbox';
++import { cachedFc } from '@/lib/layers/cache';
++import { emptyFc } from '@/lib/layers/geojson';
++import {
++  citiesForBbox,
++  fetchMunicipalEndpoint,
++  mergeMunicipalFc,
++  type MunicipalCity,
++} from '@/lib/layers/municipal';
++
++const REGISTRY_PATH = join(process.cwd(), 'public', 'data', 'layers', 'municipal-endpoints.json');
++const MIN_ZOOM = 10;
++const TTL_MS = 3 * 60_000;
++
++async function loadRegistry(): Promise<MunicipalCity[]> {
++  try {
++    const raw = await readFile(REGISTRY_PATH, 'utf8');
++    const data = JSON.parse(raw) as unknown;
++    return Array.isArray(data) ? (data as MunicipalCity[]) : [];
++  } catch {
++    return [];
++  }
++}
++
++export async function GET(req: NextRequest) {
++  const bbox = parseBbox(req.nextUrl.searchParams.get('bbox'));
++  if (!bbox) return NextResponse.json(emptyFc());
++
++  const zRaw = req.nextUrl.searchParams.get('z');
++  const z = zRaw != null ? Number(zRaw) : NaN;
++  if (!Number.isFinite(z) || z < MIN_ZOOM) {
++    return NextResponse.json(emptyFc());
++  }
++
++  const key = bboxKey('vacant', bbox);
++  const fc = await cachedFc(key, TTL_MS, async () => {
++    const registry = await loadRegistry();
++    const cities = citiesForBbox(registry, bbox).filter((c) => c.vacant);
++    if (cities.length === 0) return emptyFc();
++    const parts = await Promise.all(
++      cities.map((c) => fetchMunicipalEndpoint(c, c.vacant!, 'ground_vacant', bbox)),
++    );
++    return mergeMunicipalFc(parts);
++  });
++  return NextResponse.json(fc, { headers: { 'Cache-Control': 'public, s-maxage=60' } });
++}
+diff --git a/src/lib/layers/municipal.test.ts b/src/lib/layers/municipal.test.ts
+new file mode 100644
+index 0000000..3b5213f
+--- /dev/null
++++ b/src/lib/layers/municipal.test.ts
+@@ -0,0 +1,242 @@
++import { describe, it, expect } from 'vitest';
++import {
++  buildArcgisUrl,
++  buildSocrataUrl,
++  citiesForBbox,
++  cityBboxIntersects,
++  mapArcgisQueryToFc,
++  mapSocrataRowsToFc,
++  mergeMunicipalFc,
++  type MunicipalCity,
++  type MunicipalEndpoint,
++} from './municipal';
++
++const registry: MunicipalCity[] = [
++  {
++    id: 'nyc',
++    name: 'New York City',
++    bbox: [-74.3, 40.4, -73.6, 41.0],
++    threeOneOne: {
++      type: 'socrata',
++      url: 'https://data.cityofnewyork.us/resource/erm2-nwe9.json',
++      latField: 'latitude',
++      lngField: 'longitude',
++      idField: 'unique_key',
++      nameField: 'complaint_type',
++      limit: 100,
++    },
++  },
++  {
++    id: 'chicago',
++    name: 'Chicago',
++    bbox: [-87.95, 41.64, -87.5, 42.03],
++    threeOneOne: {
++      type: 'socrata',
++      url: 'https://data.cityofchicago.org/resource/v6vf-nfxy.json',
++      latField: 'latitude',
++      lngField: 'longitude',
++      limit: 100,
++    },
++    vacant: {
++      type: 'socrata',
++      url: 'https://data.cityofchicago.org/resource/yama-9had.json',
++      latField: 'latitude',
++      lngField: 'longitude',
++      limit: 100,
++    },
++  },
++  {
++    id: 'disabled-city',
++    name: 'Disabled',
++    bbox: [-74.3, 40.4, -73.6, 41.0],
++    disabled: true,
++    threeOneOne: {
++      type: 'socrata',
++      url: 'https://example.com/x.json',
++      latField: 'latitude',
++      lngField: 'longitude',
++    },
++  },
++];
++
++const socrataEp: MunicipalEndpoint = {
++  type: 'socrata',
++  url: 'https://example.com/resource/abc.json',
++  latField: 'latitude',
++  lngField: 'longitude',
++  idField: 'unique_key',
++  nameField: 'complaint_type',
++  statusField: 'status',
++  openedField: 'created_date',
++  addressField: 'incident_address',
++  limit: 50,
++};
++
++const arcgisEp: MunicipalEndpoint = {
++  type: 'arcgis',
++  url: 'https://services.arcgis.com/example/FeatureServer/0/query',
++  latField: 'y',
++  lngField: 'x',
++  idField: 'objectid',
++  nameField: 'address',
++  addressField: 'address',
++  limit: 50,
++};
++
++describe('cityBboxIntersects', () => {
++  it('detects overlap', () => {
++    expect(
++      cityBboxIntersects([-74.3, 40.4, -73.6, 41.0], {
++        west: -74.0,
++        south: 40.7,
++        east: -73.9,
++        north: 40.8,
++      }),
++    ).toBe(true);
++  });
++
++  it('rejects disjoint boxes', () => {
++    expect(
++      cityBboxIntersects([-74.3, 40.4, -73.6, 41.0], {
++        west: -87.9,
++        south: 41.7,
++        east: -87.6,
++        north: 41.9,
++      }),
++    ).toBe(false);
++  });
++});
++
++describe('citiesForBbox', () => {
++  it('returns intersecting enabled cities', () => {
++    const hits = citiesForBbox(registry, {
++      west: -74.1,
++      south: 40.6,
++      east: -73.9,
++      north: 40.8,
++    });
++    expect(hits.map((c) => c.id)).toEqual(['nyc']);
++  });
++
++  it('skips disabled cities even when bbox overlaps', () => {
++    const hits = citiesForBbox(registry, {
++      west: -74.1,
++      south: 40.6,
++      east: -73.9,
++      north: 40.8,
++    });
++    expect(hits.some((c) => c.id === 'disabled-city')).toBe(false);
++  });
++});
++
++describe('mapSocrataRowsToFc', () => {
++  it('maps rows to ground_civic_311 points', () => {
++    const fc = mapSocrataRowsToFc(
++      [
++        {
++          unique_key: '1',
++          complaint_type: 'Noise',
++          status: 'Open',
++          created_date: '2026-01-01T00:00:00.000',
++          incident_address: '1 Main St',
++          latitude: '40.75',
++          longitude: '-73.99',
++        },
++        { unique_key: '2', complaint_type: 'Skip', latitude: 'bad', longitude: '-73.99' },
++      ],
++      { id: 'nyc', name: 'New York City' },
++      socrataEp,
++      'ground_civic_311',
++    );
++    expect(fc.features).toHaveLength(1);
++    const f = fc.features[0]!;
++    expect(f.properties?.kind).toBe('ground_civic_311');
++    expect(f.properties?.name).toBe('Noise');
++    expect(f.properties?.city).toBe('New York City');
++    expect(f.geometry?.type).toBe('Point');
++    const [lng, lat] = (f.geometry as { coordinates: number[] }).coordinates;
++    expect(lng).toBeCloseTo(-73.99, 4);
++    expect(lat).toBeCloseTo(40.75, 4);
++  });
++
++  it('filters by request bbox', () => {
++    const fc = mapSocrataRowsToFc(
++      [
++        { unique_key: 'in', complaint_type: 'A', latitude: 40.75, longitude: -73.99 },
++        { unique_key: 'out', complaint_type: 'B', latitude: 41.5, longitude: -73.99 },
++      ],
++      { id: 'nyc', name: 'NYC' },
++      socrataEp,
++      'ground_civic_311',
++      { west: -74.0, south: 40.7, east: -73.9, north: 40.8 },
++    );
++    expect(fc.features).toHaveLength(1);
++    expect(fc.features[0]!.properties?.name).toBe('A');
++  });
++});
++
++describe('mapArcgisQueryToFc', () => {
++  it('maps point geometries to ground_vacant', () => {
++    const fc = mapArcgisQueryToFc(
++      {
++        features: [
++          {
++            attributes: { objectid: 9, address: '100 Vacant St' },
++            geometry: { x: -75.15, y: 39.95 },
++          },
++        ],
++      },
++      { id: 'philadelphia', name: 'Philadelphia' },
++      arcgisEp,
++      'ground_vacant',
++    );
++    expect(fc.features).toHaveLength(1);
++    expect(fc.features[0]!.properties?.kind).toBe('ground_vacant');
++    expect(fc.features[0]!.properties?.name).toBe('100 Vacant St');
++    const [lng, lat] = (fc.features[0]!.geometry as { coordinates: number[] }).coordinates;
++    expect(lng).toBeCloseTo(-75.15, 4);
++    expect(lat).toBeCloseTo(39.95, 4);
++  });
++
++  it('returns empty FC for malformed payload', () => {
++    expect(
++      mapArcgisQueryToFc({ error: true }, { id: 'x', name: 'X' }, arcgisEp, 'ground_vacant').features,
++    ).toHaveLength(0);
++  });
++});
++
++describe('buildSocrataUrl / buildArcgisUrl', () => {
++  const bbox = { west: -74.0, south: 40.7, east: -73.9, north: 40.8 };
++
++  it('adds $where and $limit for Socrata', () => {
++    const url = buildSocrataUrl(socrataEp, bbox);
++    expect(url).toContain('$where=');
++    expect(url).toContain('latitude');
++    expect(url).toContain('$limit=50');
++  });
++
++  it('adds envelope geometry for ArcGIS', () => {
++    const url = buildArcgisUrl(arcgisEp, bbox);
++    expect(url).toContain('geometryType=esriGeometryEnvelope');
++    expect(url).toContain('outSR=4326');
++    expect(url).toContain('resultRecordCount=50');
++  });
++});
++
++describe('mergeMunicipalFc', () => {
++  it('concatenates collections', () => {
++    const a = mapSocrataRowsToFc(
++      [{ unique_key: '1', complaint_type: 'A', latitude: 40.75, longitude: -73.99 }],
++      { id: 'nyc', name: 'NYC' },
++      socrataEp,
++      'ground_civic_311',
++    );
++    const b = mapArcgisQueryToFc(
++      { features: [{ attributes: { objectid: 1, address: 'X' }, geometry: { x: -75.1, y: 39.9 } }] },
++      { id: 'philadelphia', name: 'Philadelphia' },
++      arcgisEp,
++      'ground_vacant',
++    );
++    expect(mergeMunicipalFc([a, b]).features).toHaveLength(2);
++  });
++});
+diff --git a/src/lib/layers/municipal.ts b/src/lib/layers/municipal.ts
+new file mode 100644
+index 0000000..7070ab5
+--- /dev/null
++++ b/src/lib/layers/municipal.ts
+@@ -0,0 +1,291 @@
++import type { Feature, FeatureCollection } from 'geojson';
++import type { BBox } from './types';
++import { pointFeature, emptyFc, capFeatures } from './geojson';
++
++export type CityBBox = [west: number, south: number, east: number, north: number];
++
++export type MunicipalEndpointType = 'socrata' | 'arcgis';
++
++export interface MunicipalEndpoint {
++  type: MunicipalEndpointType;
++  url: string;
++  latField: string;
++  lngField: string;
++  idField?: string;
++  nameField?: string;
++  statusField?: string;
++  openedField?: string;
++  addressField?: string;
++  limit?: number;
++}
++
++export interface MunicipalCity {
++  id: string;
++  name: string;
++  bbox: CityBBox;
++  threeOneOne?: MunicipalEndpoint;
++  vacant?: MunicipalEndpoint;
++  disabled?: boolean;
++}
++
++export type MunicipalKind = 'ground_civic_311' | 'ground_vacant';
++
++export function cityBboxIntersects(cityBbox: CityBBox, bbox: BBox): boolean {
++  const [west, south, east, north] = cityBbox;
++  return west < bbox.east && east > bbox.west && south < bbox.north && north > bbox.south;
++}
++
++/** Cities whose registry bbox intersects the request viewport. */
++export function citiesForBbox(registry: MunicipalCity[], bbox: BBox): MunicipalCity[] {
++  return registry.filter(
++    (c) =>
++      !c.disabled &&
++      Array.isArray(c.bbox) &&
++      c.bbox.length === 4 &&
++      cityBboxIntersects(c.bbox, bbox),
++  );
++}
++
++function num(v: unknown): number | null {
++  if (typeof v === 'number' && Number.isFinite(v)) return v;
++  if (typeof v === 'string' && v.trim() !== '') {
++    const n = Number(v);
++    if (Number.isFinite(n)) return n;
++  }
++  return null;
++}
++
++function str(v: unknown): string | null {
++  if (v == null || v === '') return null;
++  return String(v);
++}
++
++function pick(row: Record<string, unknown>, field?: string): unknown {
++  if (!field) return undefined;
++  return row[field];
++}
++
++function ringCentroid(ring: number[][]): { lng: number; lat: number } | null {
++  if (!Array.isArray(ring) || ring.length < 3) return null;
++  let area = 0;
++  let cx = 0;
++  let cy = 0;
++  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
++    const [x0, y0] = ring[j]!;
++    const [x1, y1] = ring[i]!;
++    if (![x0, y0, x1, y1].every(Number.isFinite)) return null;
++    const f = x0 * y1 - x1 * y0;
++    area += f;
++    cx += (x0 + x1) * f;
++    cy += (y0 + y1) * f;
++  }
++  area *= 0.5;
++  if (Math.abs(area) < 1e-12) {
++    const [x, y] = ring[0]!;
++    return Number.isFinite(x) && Number.isFinite(y) ? { lng: x, lat: y } : null;
++  }
++  return { lng: cx / (6 * area), lat: cy / (6 * area) };
++}
++
++function coordsFromArcgisFeature(
++  feature: { geometry?: { x?: number; y?: number; rings?: number[][][] }; attributes?: Record<string, unknown> },
++  ep: MunicipalEndpoint,
++): { lng: number; lat: number } | null {
++  const g = feature.geometry;
++  if (g && Number.isFinite(g.x) && Number.isFinite(g.y)) {
++    return { lng: g.x as number, lat: g.y as number };
++  }
++  if (g?.rings?.[0]) {
++    const c = ringCentroid(g.rings[0]);
++    if (c) return c;
++  }
++  const attrs = (feature.attributes ?? {}) as Record<string, unknown>;
++  const lat = num(attrs[ep.latField]);
++  const lng = num(attrs[ep.lngField]);
++  if (lat != null && lng != null) return { lng, lat };
++  return null;
++}
++
++function coordsFromSocrataRow(row: Record<string, unknown>, ep: MunicipalEndpoint): { lng: number; lat: number } | null {
++  const lat = num(row[ep.latField]);
++  const lng = num(row[ep.lngField]);
++  if (lat != null && lng != null) return { lng, lat };
++  const loc = row.location;
++  if (loc && typeof loc === 'object') {
++    const L = loc as Record<string, unknown>;
++    const la = num(L.latitude ?? L.lat);
++    const ln = num(L.longitude ?? L.lng ?? L.lon);
++    if (la != null && ln != null) return { lng: ln, lat: la };
++  }
++  return null;
++}
++
++function buildProps(
++  kind: MunicipalKind,
++  city: Pick<MunicipalCity, 'id' | 'name'>,
++  ep: MunicipalEndpoint,
++  row: Record<string, unknown>,
++  sourceUrl: string,
++): Record<string, unknown> {
++  const name =
++    str(pick(row, ep.nameField)) ??
++    str(pick(row, ep.addressField)) ??
++    (kind === 'ground_civic_311' ? '311 Request' : 'Vacant Property');
++  return {
++    kind,
++    name,
++    category: str(pick(row, ep.nameField)),
++    status: str(pick(row, ep.statusField)),
++    openedAt: str(pick(row, ep.openedField)),
++    address: str(pick(row, ep.addressField)),
++    city: city.name,
++    cityId: city.id,
++    sourceUrl,
++    attribution: city.name,
++  };
++}
++
++/** Map Socrata JSON rows to ground_* point features. */
++export function mapSocrataRowsToFc(
++  rows: unknown,
++  city: Pick<MunicipalCity, 'id' | 'name'>,
++  ep: MunicipalEndpoint,
++  kind: MunicipalKind,
++  bbox?: BBox | null,
++): FeatureCollection {
++  if (!Array.isArray(rows)) return emptyFc();
++  const features: Feature[] = [];
++  for (let i = 0; i < rows.length; i++) {
++    const row = rows[i];
++    if (!row || typeof row !== 'object') continue;
++    const r = row as Record<string, unknown>;
++    const coords = coordsFromSocrataRow(r, ep);
++    if (!coords) continue;
++    if (bbox) {
++      if (
++        coords.lng < bbox.west ||
++        coords.lng > bbox.east ||
++        coords.lat < bbox.south ||
++        coords.lat > bbox.north
++      ) {
++        continue;
++      }
++    }
++    const idVal = str(pick(r, ep.idField)) ?? String(i);
++    features.push(
++      pointFeature(`${city.id}-${kind}-${idVal}`, coords.lng, coords.lat, buildProps(kind, city, ep, r, ep.url)),
++    );
++  }
++  return { type: 'FeatureCollection', features };
++}
++
++/** Map ArcGIS REST query JSON to ground_* point features. */
++export function mapArcgisQueryToFc(
++  data: unknown,
++  city: Pick<MunicipalCity, 'id' | 'name'>,
++  ep: MunicipalEndpoint,
++  kind: MunicipalKind,
++  bbox?: BBox | null,
++): FeatureCollection {
++  const featuresIn =
++    data && typeof data === 'object' && Array.isArray((data as { features?: unknown }).features)
++      ? ((data as { features: unknown[] }).features)
++      : null;
++  if (!featuresIn) return emptyFc();
++  const features: Feature[] = [];
++  for (let i = 0; i < featuresIn.length; i++) {
++    const f = featuresIn[i];
++    if (!f || typeof f !== 'object') continue;
++    const feat = f as {
++      geometry?: { x?: number; y?: number; rings?: number[][][] };
++      attributes?: Record<string, unknown>;
++    };
++    const coords = coordsFromArcgisFeature(feat, ep);
++    if (!coords) continue;
++    if (bbox) {
++      if (
++        coords.lng < bbox.west ||
++        coords.lng > bbox.east ||
++        coords.lat < bbox.south ||
++        coords.lat > bbox.north
++      ) {
++        continue;
++      }
++    }
++    const attrs = (feat.attributes ?? {}) as Record<string, unknown>;
++    const idVal = str(pick(attrs, ep.idField)) ?? String(i);
++    features.push(
++      pointFeature(
++        `${city.id}-${kind}-${idVal}`,
++        coords.lng,
++        coords.lat,
++        buildProps(kind, city, ep, attrs, ep.url),
++      ),
++    );
++  }
++  return { type: 'FeatureCollection', features };
++}
++
++export function buildSocrataUrl(ep: MunicipalEndpoint, bbox: BBox): string {
++  const limit = ep.limit ?? 1000;
++  const where = `${ep.latField} between ${bbox.south} and ${bbox.north} AND ${ep.lngField} between ${bbox.west} and ${bbox.east}`;
++  const u = new URL(ep.url);
++  // Keep SoQL `$` params unescaped (URLSearchParams would encode as %24).
++  const qs = [`$where=${encodeURIComponent(where)}`, `$limit=${limit}`].join('&');
++  const base = `${u.origin}${u.pathname}`;
++  const existing = u.searchParams.toString();
++  return existing ? `${base}?${existing}&${qs}` : `${base}?${qs}`;
++}
++
++export function buildArcgisUrl(ep: MunicipalEndpoint, bbox: BBox): string {
++  const limit = ep.limit ?? 1000;
++  const u = new URL(ep.url);
++  const envelope = JSON.stringify({
++    xmin: bbox.west,
++    ymin: bbox.south,
++    xmax: bbox.east,
++    ymax: bbox.north,
++    spatialReference: { wkid: 4326 },
++  });
++  u.searchParams.set('where', '1=1');
++  u.searchParams.set('geometry', envelope);
++  u.searchParams.set('geometryType', 'esriGeometryEnvelope');
++  u.searchParams.set('inSR', '4326');
++  u.searchParams.set('spatialRel', 'esriSpatialRelIntersects');
++  u.searchParams.set('outFields', '*');
++  u.searchParams.set('returnGeometry', 'true');
++  u.searchParams.set('outSR', '4326');
++  u.searchParams.set('resultRecordCount', String(limit));
++  u.searchParams.set('f', 'json');
++  return u.toString();
++}
++
++export async function fetchMunicipalEndpoint(
++  city: MunicipalCity,
++  ep: MunicipalEndpoint,
++  kind: MunicipalKind,
++  bbox: BBox,
++  fetchImpl: typeof fetch = fetch,
++): Promise<FeatureCollection> {
++  try {
++    const url = ep.type === 'socrata' ? buildSocrataUrl(ep, bbox) : buildArcgisUrl(ep, bbox);
++    const res = await fetchImpl(url, {
++      signal: AbortSignal.timeout(12_000),
++      headers: { 'User-Agent': 'osiris-layers/1.0', Accept: 'application/json' },
++    });
++    if (!res.ok) return emptyFc();
++    const data = await res.json();
++    if (ep.type === 'socrata') return mapSocrataRowsToFc(data, city, ep, kind, bbox);
++    return mapArcgisQueryToFc(data, city, ep, kind, bbox);
++  } catch {
++    return emptyFc();
++  }
++}
++
++export function mergeMunicipalFc(parts: FeatureCollection[], max = 5000): FeatureCollection {
++  const features: Feature[] = [];
++  for (const part of parts) {
++    if (Array.isArray(part?.features)) features.push(...part.features);
++  }
++  return capFeatures({ type: 'FeatureCollection', features }, max);
++}

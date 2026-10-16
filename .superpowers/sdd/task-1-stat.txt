@@ -1,0 +1,7 @@
+﻿ src/lib/layers/bbox.test.ts  | 26 ++++++++++++++++++++++++++
+ src/lib/layers/bbox.ts       | 28 ++++++++++++++++++++++++++++
+ src/lib/layers/cache.test.ts | 18 ++++++++++++++++++
+ src/lib/layers/cache.ts      | 30 ++++++++++++++++++++++++++++++
+ src/lib/layers/geojson.ts    | 32 ++++++++++++++++++++++++++++++++
+ src/lib/layers/types.ts      |  1 +
+ 6 files changed, 135 insertions(+)

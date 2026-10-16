@@ -11,6 +11,7 @@ import {
 import AiOverview from './AiOverview';
 import DonBotScan from './DonBotScan';
 import DigitalDonMark from './DigitalDonMark';
+import FloatingWindow from '@/components/FloatingWindow';
 import {
   FUNCTIONS, PULSE, WEI_REGIONS,
   exchangeClocks, formatMove, formatNet, formatPrice, formatVolume, heat, longName, monthChange,
@@ -614,14 +615,21 @@ export default function MarketsPanel({ data, spaceWeather }: MarketsPanelProps) 
   const toggleMax = () => { setMaximized(m => !m); setExpanded(true); };
 
   if (maximized && mounted && typeof document !== 'undefined') {
-    /* Full screen, built like RECON's: a window over a dimmed map, the
-       monitor and the day's heatmap on the left, the chart and what moved
-       beside it. Each column scrolls on its own. */
+    const vpW = window.innerWidth;
+    const vpH = window.innerHeight;
     return createPortal(
-      <div className="fixed inset-4 z-[999] flex items-center justify-center">
-        <div className="absolute inset-[-1rem] bg-black/60 backdrop-blur-sm" onClick={() => setMaximized(false)} />
-        <div className="relative w-full h-full max-w-[1500px] glass-panel bg-[#0a0a09]/97 backdrop-blur-2xl border border-[var(--gold-primary)]/40 rounded-xl flex flex-col overflow-hidden shadow-2xl" role="region" aria-label="Markets terminal">
-          <div className="flex items-center justify-between gap-4 px-6 py-3.5 border-b border-[var(--border-secondary)] bg-[#111] shrink-0">
+      <>
+        <div className="fixed inset-0 z-[998] bg-black/60 backdrop-blur-sm" onClick={() => setMaximized(false)} aria-hidden />
+        <FloatingWindow
+          storageKey="markets-fullscreen"
+          aria-label="Markets terminal"
+          zIndex={999}
+          minWidth={480}
+          minHeight={320}
+          defaultRect={{ x: 16, y: 16, w: Math.min(1500, Math.max(640, vpW - 32)), h: Math.max(400, vpH - 32) }}
+          className="glass-panel bg-[#0a0a09]/97 backdrop-blur-2xl border border-[var(--gold-primary)]/40 rounded-xl shadow-2xl"
+        >
+          <div data-drag-handle className="flex cursor-grab items-center justify-between gap-4 px-6 py-3.5 border-b border-[var(--border-secondary)] bg-[#111] shrink-0 active:cursor-grabbing">
             <div className="flex items-center gap-3 min-w-0">
               <BarChart3 className="w-5 h-5 shrink-0" style={{ color: T.accent }} />
               <span className="hud-text text-[16px] text-[var(--text-primary)] whitespace-nowrap">OSIRIS MARKETS</span>
@@ -639,7 +647,7 @@ export default function MarketsPanel({ data, spaceWeather }: MarketsPanelProps) 
               </button>
             </div>
           </div>
-          <div className="flex-1 min-h-0 flex flex-col gap-2.5 p-4">
+          <div className="flex-1 min-h-0 flex flex-col gap-2.5 p-4 overflow-hidden">
             <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2.5 shrink-0">
               {commandLine}
               {functionKeys}
@@ -660,8 +668,8 @@ export default function MarketsPanel({ data, spaceWeather }: MarketsPanelProps) 
               </div>
             </div>
           </div>
-        </div>
-      </div>,
+        </FloatingWindow>
+      </>,
       document.body,
     );
   }
@@ -671,7 +679,7 @@ export default function MarketsPanel({ data, spaceWeather }: MarketsPanelProps) 
     // full-screen box away from its inset.
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }}
-      className="glass-panel relative flex flex-col overflow-hidden pointer-events-auto"
+      className="glass-panel relative flex h-full min-h-0 flex-col overflow-hidden pointer-events-auto"
       role="region"
       aria-label="Markets terminal"
     >
@@ -695,7 +703,7 @@ export default function MarketsPanel({ data, spaceWeather }: MarketsPanelProps) 
       </div>
       {expanded && (
         /* One scroll region, capped so the panel ends above the status bar. */
-        <div className="space-y-2 px-3 py-3 overflow-y-auto styled-scrollbar max-h-[calc(100vh-11rem)]">
+        <div className="space-y-2 px-3 py-3 overflow-y-auto styled-scrollbar flex-1 min-h-0">
           {commandLine}
           {functionKeys}
           {monitor}

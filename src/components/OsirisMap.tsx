@@ -6,7 +6,7 @@ import * as maplibregl from 'maplibre-gl';
 import { installTerrainTileProtocol } from '@/lib/terrain-tiles';
 import { CLOUDS_ATTRIBUTION, CLOUDS_CREDIT, CLOUDS_LAYER, frameTime } from '@/lib/live-clouds';
 import { createCloudLayer } from '@/lib/live-clouds-layer';
-import { WIND_ATTRIBUTION } from '@/lib/wind-layer';
+import { createWindOverlay, fetchWindGrid, type WindOverlay } from '@/lib/wind-overlay';
 import { attachOi, type OiGlobe, type OiHover } from '@/lib/oi/globe';
 import { attachHighlights, type Highlighter } from '@/lib/oi/highlights';
 import type { Highlight } from '@/lib/oi/assist/tools';
@@ -17,14 +17,120 @@ import { arrivalBeacons } from '@/lib/malware-intel';
 import { ALERT_KINDS, timeAgo, type AlertKind } from '@/lib/alert-digest';
 import SatelliteCard, { type SatelliteDetail } from '@/components/SatelliteCard';
 import CctvPreviews, { type PreviewCamera } from '@/components/CctvPreviews';
-import MapControls from '@/components/MapControls';
-import WindBar from '@/components/WindBar';
-import RainBar from '@/components/RainBar';
-import { DOCK } from '@/components/TimeBox';
 import LiveNewsPreviews, { type PreviewFeed } from '@/components/LiveNewsPreviews';
+import GpsJamBar from '@/components/GpsJamBar';
+import LeylinesBar from '@/components/LeylinesBar';
+import PaleoBar from '@/components/PaleoBar';
+import { DOCK } from '@/components/TimeBox';
+import { GPSJAM_ATTRIBUTION } from '@/lib/gpsjam';
+import {
+  LEYLINES_ATTRIBUTION,
+  LEYLINES_WATKINS_ATTRIBUTION,
+} from '@/lib/leylines-catalog';
+import {
+  parseLeylinesMode,
+  showGrid,
+  showWatkins,
+  type LeylinesMode,
+} from '@/lib/leylines-mode';
+import { createPaleoFloodOverlay, type PaleoFloodOverlay } from '@/lib/paleo-flood-overlay';
+import { paleoCoastAttribution } from '@/lib/paleo-coasts';
+import {
+  clampSeaLevelMeters,
+  type PaleoMode,
+} from '@/lib/paleo-sea-level';
 import { attachTerrain, type TerrainStatus } from '@/lib/map-terrain';
 
 import { applyMapProjection } from '@/lib/map-projection';
+import { downloadFile } from '@/lib/aoi-export';
+import {
+  getCuriosityNote,
+  loadCuriosityNotes,
+  loadCuriosityNotesWithSeed,
+  notesToExportGeoJSON,
+  notesToGeoJSON,
+  saveCuriosityNotes,
+  upsertCuriosityNote,
+  type CuriosityNote,
+} from '@/lib/curiosity-notes';
+import {
+  GROUND_LAYER_KEYS,
+  GROUND_MIN_ZOOM,
+  GROUND_DEBOUNCE_MS,
+  boundsToBboxParam,
+  buildGroundLayerUrl,
+  type GroundLayerKey,
+} from '@/lib/ground-layers-client';
+import {
+  clearAllTracks,
+  dockRows,
+  emptyTrackSelection,
+  ensureShipTracks,
+  removeShipTracks,
+  removeTrack,
+  setFlightTrack,
+  setShipTrackResult,
+  setShipTrailDays,
+  setShipTrailDaysForMany,
+  setTransitTrack,
+  toggleShipTrack,
+  type TrackKind,
+  type TrackSelectionState,
+} from '@/lib/map-track-selections';
+import {
+  capAisPicks,
+  isMeaningfulBox,
+  normalizeScreenRect,
+  pickFromShipProps,
+  type ScreenRect,
+} from '@/lib/ais-box-select';
+import { ActiveTracksDock } from '@/components/ActiveTracksDock';
+import {
+  groundTrackBearing,
+  ISS_FOLLOW_LOCK_MS,
+  ISS_FOLLOW_STREAM_LAG_MS,
+  clampIssStreamLagMs,
+  issFollowProfile,
+  resolveIssFollowLockView,
+  writeIssFollowViewPrefs,
+} from '@/lib/iss-follow';
+import { propagateTLE } from '@/lib/orbit';
+import { flightsToGeoJsonFeatures } from '@/lib/flights-geojson';
+import { loadAdminBordersGeoJson } from '@/lib/admin-borders';
+import {
+  anyAisShipLayerOn,
+  maritimeInfraOn,
+  shipVisibleForLayers,
+} from '@/lib/ais-layer-keys';
+
+const AIS_TRAIL_DAYS = [1, 7, 30, 183, 366] as const;
+const AIS_TRAIL_LABELS = ['1 DAY', '1 WEEK', '1 MONTH', '6 MONTHS', 'ALL'] as const;
+
+/** Dense point layers that use MapLibre clustering. */
+const GROUND_CLUSTER_KEYS = new Set<GroundLayerKey>(['uap', 'nightlife', 'civic_311']);
+
+/** Distinct cyan / amber / slate hues (theme tokens; no purple glow). */
+const GROUND_COLORS: Record<GroundLayerKey, string> = {
+  uap: '#00E5FF',
+  abandoned: '#FFB300',
+  trails: '#66BB6A',
+  public_access: '#26A69A',
+  nightlife: '#26C6DA',
+  gtfs: '#FF9500',
+  trains: '#E53935',
+  freight_rail: '#FF8F00',
+  transit_alerts: '#FF6D00',
+  gbfs: '#00C853',
+  gauges: '#4DD0E1',
+  civic_311: '#90A4AE',
+  vacant: '#FFC107',
+  historic_maps: '#607D8B',
+  lightning: '#FFEB3B',
+  buoys: '#29B6F6',
+  storms: '#FF1744',
+  aprs: '#69F0AE',
+  road_incidents: '#FF8A65',
+};
 
 /** The catalogue fields the satellite layer and its popup actually read. */
 interface SatelliteRow {
@@ -42,9 +148,18 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 interface OsirisMapProps {
   data: any;
   activeLayers: Record<string, boolean>;
+  /** Turn a layer key off (weather time-box power buttons). */
+  onLayerOff?: (key: string) => void;
   onEntityClick?: (entity: any) => void;
   onMouseCoords?: (coords: { lat: number; lng: number }) => void;
   onRightClick?: (coords: { lat: number; lng: number }) => void;
+  /** Open Mapillary street view at coords (context menu / pegman). */
+  onStreetView?: (coords: { lat: number; lng: number }) => void;
+  /** Look-at pin (+ optional image origin) while street-view panel is open. */
+  streetViewPin?: {
+    lookAt: { lat: number; lng: number };
+    image?: { lat: number; lng: number };
+  } | null;
   onViewStateChange?: (vs: { zoom: number; latitude: number }) => void;
   /** `alertId` also opens that Live Alert's pin once the camera arrives.
    *  `duration` overrides the default 2 s flight. */
@@ -58,8 +173,6 @@ interface OsirisMapProps {
   terrainRetry?: number;
   terrainFocus?: number;
   onTerrainStatusChange?: (status: TerrainStatus) => void;
-  /** Turns a layer off, from the power button on its box (Wind, Rain). */
-  onLayerOff?: (key: string) => void;
 
   mapStyle?: string;
   sweepData?: any;
@@ -95,6 +208,19 @@ interface OsirisMapProps {
   followUser?: boolean;
   /** Fired when the operator pans/zooms/rotates while follow mode is on. */
   onFollowInterrupt?: () => void;
+  /**
+   * SpaceCam MAP SYNC — ISS TLE for continuous client-side follow.
+   * Zoom and pitch are set once on lock, then left to the operator.
+   */
+  issFollowTle?: { line1: string; line2: string } | null;
+  /** SpaceCam feed id — frames MAP SYNC for nadir vs horizon cameras. */
+  issCamFeedId?: string | null;
+  /** YouTube/Sen stream lag (ms). MAP SYNC samples TLE this far in the past. */
+  issStreamLagMs?: number;
+  /** Bump to snapshot live pitch/zoom/lag into ISS track defaults. */
+  issSaveViewRequest?: number;
+  /** Fired after a successful ISS view snapshot. */
+  onIssViewSaved?: (prefs: { pitch: number; zoom: number; lagMs: number }) => void;
   /** Live navigation: tighter zoom and the map turned to face travel direction. */
   navigating?: boolean;
   /** Corroborated endpoint airports for watched aircraft, keyed by icao24. */
@@ -132,6 +258,8 @@ function computeSolarTerminator(): [number, number][] {
 }
 
 const EMPTY_FC = { type: 'FeatureCollection' as const, features: [] };
+/** Zoom at/above which flight layers draw the full feed (no thinning). */
+const FLIGHTS_FULL_DENSITY_ZOOM = 7;
 
 /** A colour, or an expression for one, as addLayer takes it. */
 type LayerColor = NonNullable<Extract<Parameters<maplibregl.Map['addLayer']>[0], { type: 'circle' }>['paint']>['circle-color'];
@@ -186,7 +314,7 @@ interface AlertPinFeature {
   properties: AlertPinProps;
 }
 
-function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightClick, onViewStateChange, onReady, flyToLocation, alertPinIds = null, projection = 'globe', terrainEnabled = false, terrainRetry = 0, terrainFocus = 0, onTerrainStatusChange, onLayerOff, mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core', drawnPolygons = [], arcgisLayers = [], drawMode = null, onDrawComplete, onDrawProgress, onDrawCancel, drawCommand = null, onMapCenter, route = null, userLocation = null, followUser = false, onFollowInterrupt, navigating = false, aircraftAirports = {}, onOiGlobe, onOiSelect, onOiHover, onOiFollow, oiHighlight = null }: OsirisMapProps) {
+function OsirisMap({ data, activeLayers, onLayerOff, onEntityClick, onMouseCoords, onRightClick, onStreetView, streetViewPin = null, onViewStateChange, onReady, flyToLocation, alertPinIds = null, projection = 'globe', terrainEnabled = false, terrainRetry = 0, terrainFocus = 0, onTerrainStatusChange, mapStyle = 'dark', sweepData, scanTargets = [], demoMode = false, theme = 'core', drawnPolygons = [], arcgisLayers = [], drawMode = null, onDrawComplete, onDrawProgress, onDrawCancel, drawCommand = null, onMapCenter, route = null, userLocation = null, followUser = false, onFollowInterrupt, issFollowTle = null, issCamFeedId = 'sen-4k', issStreamLagMs = ISS_FOLLOW_STREAM_LAG_MS, issSaveViewRequest = 0, onIssViewSaved, navigating = false, aircraftAirports = {}, onOiGlobe, onOiSelect, onOiHover, onOiFollow, oiHighlight = null }: OsirisMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const popupRef = useRef<maplibregl.Popup | null>(null);
@@ -195,6 +323,60 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   const alertPinsRef = useRef<AlertPinFeature[]>([]);
   const openAlertPinRef = useRef<((id: string) => void) | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  /** True when zoom ≥ FLIGHTS_FULL_DENSITY_ZOOM — every flight from the feed is drawn. */
+  const [flightsFullDensity, setFlightsFullDensity] = useState(false);
+  /** Multi-ship / transit / flight track selections (Active tracks dock). */
+  const [trackSel, setTrackSel] = useState<TrackSelectionState>(emptyTrackSelection);
+  const shipTrackAbortsRef = useRef(new Map<string, AbortController>());
+  /** MMSIs in the open AIS group box-select popup (shared trail slider). */
+  const groupMmsisRef = useRef<string[]>([]);
+  const transitRouteAbortRef = useRef<AbortController | null>(null);
+  const [gpsJamDate, setGpsJamDate] = useState(() => {
+    try {
+      return localStorage.getItem('osiris.gpsjam.date') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [gpsJamDates, setGpsJamDates] = useState<string[]>([]);
+  const [gpsJamLoading, setGpsJamLoading] = useState(false);
+  const gpsJamAbortRef = useRef<AbortController | null>(null);
+  const [paleoMode, setPaleoMode] = useState<PaleoMode>(() => {
+    try {
+      return localStorage.getItem('osiris.paleo.mode') === 'ma' ? 'ma' : 'meters';
+    } catch {
+      return 'meters';
+    }
+  });
+  const [paleoMeters, setPaleoMeters] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('osiris.paleo.meters'));
+      return Number.isFinite(v) ? clampSeaLevelMeters(v) : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const [paleoAgeMa, setPaleoAgeMa] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('osiris.paleo.ageMa'));
+      return Number.isFinite(v) ? v : 12.8;
+    } catch {
+      return 12.8;
+    }
+  });
+  const [paleoAges, setPaleoAges] = useState<number[]>([]);
+  const [paleoLoading, setPaleoLoading] = useState(false);
+  const paleoFloodRef = useRef<PaleoFloodOverlay | null>(null);
+  const paleoCoastAbortRef = useRef<AbortController | null>(null);
+  const [leylinesMode, setLeylinesMode] = useState<LeylinesMode>(() => {
+    try {
+      return parseLeylinesMode(localStorage.getItem('osiris.leylines.mode'));
+    } catch {
+      return 'both';
+    }
+  });
+  const [leylinesLoading, setLeylinesLoading] = useState(false);
+  const leylinesAbortRef = useRef<AbortController | null>(null);
 
   // Do not replay an earlier explicit zoom request after theme/retry remounts.
   const lastTerrainFocus = useRef(terrainFocus);
@@ -210,10 +392,26 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   useEffect(() => { paletteRef.current = palette; }, [palette]);
   const onReadyRef = useRef(onReady);
   useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
+  const onRightClickRef = useRef(onRightClick);
+  const onStreetViewRef = useRef(onStreetView);
+  useEffect(() => {
+    onRightClickRef.current = onRightClick;
+    onStreetViewRef.current = onStreetView;
+  }, [onRightClick, onStreetView]);
+  const streetViewLayerOnRef = useRef(!!(activeLayers as { street_view?: boolean }).street_view);
+  useEffect(() => {
+    streetViewLayerOnRef.current = !!(activeLayers as { street_view?: boolean }).street_view;
+  }, [(activeLayers as { street_view?: boolean }).street_view]);
   const prevDrawnPolygonsRef = useRef<string[]>([]);
   const prevArcgisLayersRef = useRef<string[]>([]);
   const satLayerRef = useRef<ReturnType<typeof createSatelliteLayer> | null>(null);
+  /** Curiosities atlas FC, kept so toggling the layer does not re-download ~196k points. */
+  const curiositiesFcRef = useRef<GeoJSON.FeatureCollection | null>(null);
+  const curiositiesLoadRef = useRef<'idle' | 'loading' | 'ready'>('idle');
+  /** Investigator labels/notes for curiosity pins (localStorage-backed). */
+  const curiosityNotesRef = useRef<Record<string, CuriosityNote>>({});
   const cloudLayerRef = useRef<ReturnType<typeof createCloudLayer> | null>(null);
+  const windOverlayRef = useRef<WindOverlay | null>(null);
   const onOiGlobeRef = useRef(onOiGlobe);
   const onOiSelectRef = useRef(onOiSelect);
   const onOiHoverRef = useRef(onOiHover);
@@ -273,6 +471,73 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     ctx.lineTo(cx + size * 0.12, cy + size * 0.1);
     ctx.closePath();
     ctx.fill();
+    map.addImage(id, { width: size, height: size, data: new Uint8Array(ctx.getImageData(0, 0, size, size).data) });
+  }, []);
+
+  /** Top-down helicopter: fuselage oval + main rotor + tail. */
+  const createHeliIcon = useCallback((map: maplibregl.Map, id: string, color: string, size: number) => {
+    if (map.hasImage(id)) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const cx = size / 2, cy = size / 2;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = Math.max(1.5, size * 0.08);
+    ctx.beginPath();
+    ctx.moveTo(cx - size * 0.42, cy);
+    ctx.lineTo(cx + size * 0.42, cy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - size * 0.08);
+    ctx.lineTo(cx, cy + size * 0.08);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + size * 0.06, size * 0.12, size * 0.22, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + size * 0.22);
+    ctx.lineTo(cx, cy + size * 0.4);
+    ctx.lineTo(cx + size * 0.14, cy + size * 0.38);
+    ctx.stroke();
+    map.addImage(id, { width: size, height: size, data: new Uint8Array(ctx.getImageData(0, 0, size, size).data) });
+  }, []);
+
+  /** `up` for bearing-rotated vehicle cues; `right` for line-placed route arrows (MapLibre aligns +x to the line). */
+  const createChevronIcon = useCallback((
+    map: maplibregl.Map,
+    id: string,
+    color: string,
+    size: number,
+    point: 'up' | 'right' = 'up',
+    opts?: { stroke?: string; strokeWidth?: number },
+  ) => {
+    if (map.hasImage(id)) map.removeImage(id);
+    const canvas = document.createElement('canvas');
+    canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const cx = size / 2, cy = size / 2;
+    ctx.beginPath();
+    if (point === 'right') {
+      ctx.moveTo(cx + size * 0.42, cy);
+      ctx.lineTo(cx - size * 0.32, cy - size * 0.34);
+      ctx.lineTo(cx - size * 0.08, cy);
+      ctx.lineTo(cx - size * 0.32, cy + size * 0.34);
+    } else {
+      ctx.moveTo(cx, cy - size * 0.42);
+      ctx.lineTo(cx + size * 0.34, cy + size * 0.32);
+      ctx.lineTo(cx, cy + size * 0.08);
+      ctx.lineTo(cx - size * 0.34, cy + size * 0.32);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    if (opts?.stroke) {
+      ctx.strokeStyle = opts.stroke;
+      ctx.lineWidth = opts.strokeWidth ?? Math.max(1.5, size * 0.08);
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
     map.addImage(id, { width: size, height: size, data: new Uint8Array(ctx.getImageData(0, 0, size, size).data) });
   }, []);
 
@@ -339,16 +604,16 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     
-    // Select basemap style
-    const styleUrl = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+    // Local style snapshot — avoids a cold proxy round-trip to basemaps.cartocdn.com
+    // (that fetch was timing out and leaving the globe blank). Tile/sprite/glyph URLs
+    // inside the style still go through transformRequest → /api/proxy-tiles.
+    const styleUrl = '/dark-matter-style.json';
 
     const container = containerRef.current;
     maplibregl.setWorkerUrl(`/vendor/maplibre/${maplibregl.getVersion()}/maplibre-gl-worker.mjs`);
-    /* Open on the whole globe, turned to the viewer's side of it. The UTC
-       offset is a free, instant stand-in for longitude (15° an hour), so the
-       fly-in to their city after the splash is a dive, not a spin round the
-       planet. This used to open on Bulgaria at zoom 6.5 for everyone. */
-    const facingLng = Math.max(-180, Math.min(180, -new Date().getTimezoneOffset() / 4));
+    /* Open on the whole globe, already facing North Attleboro's longitude so
+       the post-splash fly-in is a dive, not a spin round the planet. */
+    const facingLng = -71.3328;
     const baseOptions = {
       container,
       style: styleUrl,
@@ -433,6 +698,17 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       createIcon(map, 'plane-pink', flightGov, 24);    
       createIcon(map, 'plane-red', flightMil, 24);     
       createIcon(map, 'plane-grey', boot.flightUnknown, 24);
+      createHeliIcon(map, 'heli-cyan', flightCom, 24);
+      createHeliIcon(map, 'heli-green', flightPriv, 24);
+      createHeliIcon(map, 'heli-pink', flightGov, 24);
+      createHeliIcon(map, 'heli-red', flightMil, 24);
+      createHeliIcon(map, 'heli-grey', boot.flightUnknown, 24);
+      /* Bright fill + dark stroke so arrows read on orange/red route lines. */
+      createChevronIcon(map, 'transit-arrow', '#FFF8E7', 28, 'right', {
+        stroke: '#1A1208',
+        strokeWidth: 2.5,
+      });
+      createChevronIcon(map, 'transit-heading', '#FF9500', 16, 'up');
       createDot(map, 'dot-gold', isGhost ? phantomPurple : '#D4AF37', 8);
       createDot(map, 'dot-red', isGhost ? phantomPurple : '#D32F2F', 10);
       createDot(map, 'dot-orange', isGhost ? phantomPurple : '#E65100', 10);
@@ -440,10 +716,99 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       createDot(map, 'dot-fire', isGhost ? phantomPurple : '#E65100', 10);
       createDot(map, 'dot-cctv', cameraColor, 10);
 
-      const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'malware-nodes', 'malware-new', 'network-mesh', 'cyber-heads', 'gdelt-events', 'cf-outages', 'cf-attacks', 'alert-pins'];
+      const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'malware-nodes', 'malware-new', 'network-mesh', 'cyber-heads', 'gdelt-events', 'cf-outages', 'cf-attacks', 'alert-pins', 'transit-route', 'transit-route-stops', 'selected-flight-track', 'selected-ship-track', 'street-view-pin'];
       sources.forEach(s => map.addSource(s, { type: 'geojson', data: EMPTY_FC }));
+      /* Curiosities atlas — ~196k Drive-KML points; clustered for GPU sanity. */
+      map.addSource('curiosities', {
+        type: 'geojson',
+        data: EMPTY_FC,
+        cluster: true,
+        clusterMaxZoom: 12,
+        clusterRadius: 42,
+      });
+      /* Investigator-annotated pins only (labels + notes overlay). */
+      map.addSource('curiosities-notes', { type: 'geojson', data: EMPTY_FC });
+      curiosityNotesRef.current = loadCuriosityNotes();
+      void loadCuriosityNotesWithSeed().then((merged) => {
+        curiosityNotesRef.current = merged;
+        const notesSrc = map.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+        notesSrc?.setData(notesToGeoJSON(merged) as never);
+      });
 
-      // ── FLIGHT ROUTE VISUALIZATION SOURCES & LAYERS ──
+      /* GROUND layers — viewport-fetched GeoJSON; cluster dense point sets. */
+      for (const key of GROUND_LAYER_KEYS) {
+        if (GROUND_CLUSTER_KEYS.has(key)) {
+          map.addSource(`ground-${key}`, {
+            type: 'geojson',
+            data: EMPTY_FC,
+            cluster: true,
+            clusterMaxZoom: 12,
+            clusterRadius: 42,
+          });
+        } else {
+          map.addSource(`ground-${key}`, { type: 'geojson', data: EMPTY_FC });
+        }
+      }
+
+      // ── Selected aircraft flown track (adsb.lol trace via /api/aircraft) ──
+      map.addLayer({
+        id: 'selected-flight-track-glow',
+        type: 'line',
+        source: 'selected-flight-track',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#00E5FF',
+          'line-width': 6,
+          'line-opacity': 0.22,
+          'line-blur': 1.2,
+        },
+      });
+      map.addLayer({
+        id: 'selected-flight-track-line',
+        type: 'line',
+        source: 'selected-flight-track',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#7FE9FF',
+          'line-width': [
+            'interpolate', ['linear'], ['zoom'],
+            2, 1.5,
+            6, 2.5,
+            10, 3.5,
+          ],
+          'line-opacity': 0.9,
+        },
+      });
+
+      // ── Selected vessel AIS track (Open Waters via /api/maritime/vessel) ──
+      map.addLayer({
+        id: 'selected-ship-track-glow',
+        type: 'line',
+        source: 'selected-ship-track',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#26C6DA',
+          'line-width': 6,
+          'line-opacity': 0.22,
+          'line-blur': 1.2,
+        },
+      });
+      map.addLayer({
+        id: 'selected-ship-track-line',
+        type: 'line',
+        source: 'selected-ship-track',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': '#80DEEA',
+          'line-width': [
+            'interpolate', ['linear'], ['zoom'],
+            2, 1.5,
+            6, 2.5,
+            10, 3.5,
+          ],
+          'line-opacity': 0.9,
+        },
+      });
 
       // Warning icon generator (parameterized — eliminates 3x copy-paste)
       const createWarningIcon = (id: string, color: string) => {
@@ -833,12 +1198,389 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       ];
       flightLayers.forEach(l => {
         map.addLayer({ id: l.id, type: 'symbol', source: l.src, layout: {
-          'icon-image': l.icon, 'icon-size': ['interpolate',['linear'],['zoom'], 1,0.4, 5,0.7, 10,1],
+          'icon-image': [
+            'case',
+            ['==', ['get', 'aircraft_category'], 'heli'],
+            l.icon.replace('plane-', 'heli-'),
+            l.icon,
+          ],
+          'icon-size': ['interpolate',['linear'],['zoom'], 1,0.4, 5,0.7, 10,1],
           'icon-rotate': ['get','heading'], 'icon-rotation-alignment': 'map', 'icon-allow-overlap': true, 'icon-ignore-placement': true,
         }, paint: { 'icon-opacity': 0.85 }});
       });
 
       // Route layers are added later (after setMapReady) so they render on top of everything.
+
+      // Curiosities atlas (haunted / weird / treasure / abandoned / furries)
+      map.addLayer({
+        id: 'curiosities-clusters',
+        type: 'circle',
+        source: 'curiosities',
+        filter: ['has', 'point_count'],
+        paint: {
+          'circle-color': [
+            'step', ['get', 'point_count'],
+            '#9C6BFF', 25, '#7E57C2', 100, '#5E35B1', 500, '#4527A0',
+          ],
+          'circle-radius': [
+            'step', ['get', 'point_count'],
+            12, 25, 16, 100, 22, 500, 28,
+          ],
+          'circle-opacity': 0.72,
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': 'rgba(255,255,255,0.35)',
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-cluster-count',
+        type: 'symbol',
+        source: 'curiosities',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': ['get', 'point_count_abbreviated'],
+          'text-font': ['Open Sans Bold'],
+          'text-size': 11,
+          'text-allow-overlap': true,
+        },
+        paint: { 'text-color': '#F5F0FF', 'text-halo-color': '#1a1028', 'text-halo-width': 1 },
+      });
+      map.addLayer({
+        id: 'curiosities-dots',
+        type: 'circle',
+        source: 'curiosities',
+        filter: ['!', ['has', 'point_count']],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 2, 8, 3.5, 14, 6],
+          'circle-color': '#B388FF',
+          'circle-opacity': 0.85,
+          'circle-stroke-width': 0.8,
+          'circle-stroke-color': 'rgba(255,255,255,0.4)',
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-notes-glow',
+        type: 'circle',
+        source: 'curiosities-notes',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 10, 10, 16, 14, 22],
+          'circle-color': '#E0B0FF',
+          'circle-opacity': 0.22,
+          'circle-blur': 0.6,
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-notes-dots',
+        type: 'circle',
+        source: 'curiosities-notes',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 5, 10, 7, 14, 9],
+          'circle-color': '#F3E5FF',
+          'circle-opacity': 0.95,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#B388FF',
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-notes-label',
+        type: 'symbol',
+        source: 'curiosities-notes',
+        minzoom: 8,
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-font': ['Open Sans Bold'],
+          'text-size': 11,
+          'text-offset': [0, 1.35],
+          'text-anchor': 'top',
+          'text-max-width': 14,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#F3E5FF',
+          'text-halo-color': '#1a1028',
+          'text-halo-width': 1.4,
+        },
+      });
+
+      // GROUND layers — circles / rail lines / historic footprint fill+stroke
+      for (const key of GROUND_LAYER_KEYS) {
+        const color = GROUND_COLORS[key];
+        const src = `ground-${key}`;
+        if (key === 'historic_maps') {
+          map.addLayer({
+            id: 'ground-historic_maps-fill',
+            type: 'fill',
+            source: src,
+            paint: {
+              'fill-color': color,
+              'fill-opacity': 0.22,
+            },
+          });
+          map.addLayer({
+            id: 'ground-historic_maps-line',
+            type: 'line',
+            source: src,
+            paint: {
+              'line-color': '#00E5FF',
+              'line-width': 1.5,
+              'line-opacity': 0.85,
+            },
+          });
+          continue;
+        }
+        if (key === 'trails') {
+          map.addLayer({
+            id: 'ground-trails-line',
+            type: 'line',
+            source: src,
+            paint: {
+              'line-color': [
+                'match', ['get', 'subkind'],
+                'cycle', '#43A047',
+                'hike', '#FFA726',
+                'foot', '#4FC3F7',
+                'bridle', '#8D6E63',
+                'rail_trail', '#C0A062',
+                '#66BB6A',
+              ],
+              'line-width': 2,
+              'line-opacity': 0.85,
+            },
+          });
+          continue;
+        }
+        if (key === 'public_access') {
+          map.addLayer({
+            id: 'ground-public_access-fill',
+            type: 'fill',
+            source: src,
+            paint: {
+              'fill-color': [
+                'match', ['get', 'subkind'],
+                'blm', '#D4A574',
+                'park', '#66BB6A',
+                'protected', '#26A69A',
+                color,
+              ],
+              'fill-opacity': 0.2,
+            },
+          });
+          map.addLayer({
+            id: 'ground-public_access-line',
+            type: 'line',
+            source: src,
+            paint: {
+              'line-color': [
+                'match', ['get', 'subkind'],
+                'blm', '#D4A574',
+                'park', '#66BB6A',
+                'protected', '#26A69A',
+                color,
+              ],
+              'line-width': 1.5,
+              'line-opacity': 0.85,
+            },
+          });
+          continue;
+        }
+        if (key === 'abandoned' || key === 'trains' || key === 'freight_rail' || key === 'storms') {
+          if (key === 'storms') {
+            map.addLayer({
+              id: 'ground-storms-fill',
+              type: 'fill',
+              source: src,
+              filter: ['==', ['geometry-type'], 'Polygon'],
+              paint: { 'fill-color': color, 'fill-opacity': 0.18 },
+            });
+          }
+          map.addLayer({
+            id: `ground-${key}-line`,
+            type: 'line',
+            source: src,
+            filter: ['==', ['geometry-type'], 'LineString'],
+            paint: {
+              'line-color': color,
+              'line-width': key === 'trains' ? 2 : key === 'storms' ? 3 : key === 'freight_rail' ? 2.25 : 2.5,
+              'line-opacity': key === 'trains' ? 0.55 : key === 'freight_rail' ? 0.75 : 0.85,
+            },
+          });
+          if (key !== 'freight_rail') {
+            map.addLayer({
+              id: `ground-${key}-dots`,
+              type: 'circle',
+              source: src,
+              filter: ['==', ['geometry-type'], 'Point'],
+              paint: {
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 6],
+                'circle-color': color,
+                'circle-opacity': 0.9,
+                'circle-stroke-width': 0.8,
+                'circle-stroke-color': 'rgba(255,255,255,0.35)',
+              },
+            });
+          }
+          continue;
+        }
+        if (GROUND_CLUSTER_KEYS.has(key)) {
+          map.addLayer({
+            id: `ground-${key}-clusters`,
+            type: 'circle',
+            source: src,
+            filter: ['has', 'point_count'],
+            paint: {
+              'circle-color': [
+                'step', ['get', 'point_count'],
+                color, 25, color, 100, color,
+              ],
+              'circle-radius': [
+                'step', ['get', 'point_count'],
+                12, 25, 16, 100, 22,
+              ],
+              'circle-opacity': 0.7,
+              'circle-stroke-width': 1.5,
+              'circle-stroke-color': 'rgba(255,255,255,0.35)',
+            },
+          });
+          map.addLayer({
+            id: `ground-${key}-cluster-count`,
+            type: 'symbol',
+            source: src,
+            filter: ['has', 'point_count'],
+            layout: {
+              'text-field': ['get', 'point_count_abbreviated'],
+              'text-font': ['Open Sans Bold'],
+              'text-size': 11,
+              'text-allow-overlap': true,
+            },
+            paint: { 'text-color': '#F5F5F5', 'text-halo-color': '#0c0e1a', 'text-halo-width': 1 },
+          });
+          map.addLayer({
+            id: `ground-${key}-dots`,
+            type: 'circle',
+            source: src,
+            filter: ['!', ['has', 'point_count']],
+            paint: {
+              'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 2.5, 10, 4.5, 14, 7],
+              'circle-color': color,
+              'circle-opacity': 0.88,
+              'circle-stroke-width': 0.8,
+              'circle-stroke-color': 'rgba(255,255,255,0.4)',
+            },
+          });
+          continue;
+        }
+        map.addLayer({
+          id: `ground-${key}-dots`,
+          type: 'circle',
+          source: src,
+          paint: {
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 2.5, 10, 4.5, 14, 7],
+            'circle-color': color,
+            'circle-opacity': 0.88,
+            'circle-stroke-width': 0.8,
+            'circle-stroke-color': 'rgba(255,255,255,0.4)',
+          },
+        });
+      }
+
+      /* Selected transit vehicle trip/route shape (GTFS shapes.txt or stop path). */
+      map.addLayer({
+        id: 'transit-route-glow',
+        type: 'line',
+        source: 'transit-route',
+        paint: {
+          'line-color': ['coalesce', ['get', 'color'], '#E53935'],
+          'line-width': 8,
+          'line-opacity': 0.22,
+          'line-blur': 1.2,
+        },
+      });
+      map.addLayer({
+        id: 'transit-route-line',
+        type: 'line',
+        source: 'transit-route',
+        paint: {
+          'line-color': ['coalesce', ['get', 'color'], '#E53935'],
+          'line-width': 3.5,
+          'line-opacity': 0.92,
+        },
+      });
+      map.addLayer({
+        id: 'transit-route-arrows',
+        type: 'symbol',
+        source: 'transit-route',
+        layout: {
+          'symbol-placement': 'line',
+          'symbol-spacing': 40,
+          'icon-image': 'transit-arrow',
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 8, 0.85, 12, 1.15, 15, 1.35],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'icon-rotation-alignment': 'map',
+          'icon-pitch-alignment': 'map',
+          'symbol-z-order': 'source',
+        },
+        paint: { 'icon-opacity': 1 },
+      });
+      map.addLayer({
+        id: 'transit-route-stops-dots',
+        type: 'circle',
+        source: 'transit-route-stops',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3.5, 14, 6],
+          'circle-color': [
+            'case',
+            ['any', ['==', ['get', 'isNext'], true], ['==', ['get', 'isNext'], 'true']], '#FF9500',
+            ['any', ['==', ['get', 'isCurrent'], true], ['==', ['get', 'isCurrent'], 'true']], '#00E5FF',
+            '#FFB74D',
+          ],
+          'circle-opacity': 0.92,
+          'circle-stroke-width': 1,
+          'circle-stroke-color': 'rgba(255,255,255,0.4)',
+        },
+      });
+      map.addLayer({
+        id: 'transit-route-stops-label',
+        type: 'symbol',
+        source: 'transit-route-stops',
+        minzoom: 11,
+        layout: {
+          'text-field': ['get', 'name'],
+          'text-size': 9,
+          'text-font': ['Open Sans Regular'],
+          'text-offset': [0, 1.1],
+          'text-anchor': 'top',
+          'text-max-width': 10,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#E8E6E0',
+          'text-halo-color': '#0c0e1a',
+          'text-halo-width': 1.2,
+        },
+      });
+
+      for (const key of ['gtfs', 'trains'] as const) {
+        map.addLayer({
+          id: `ground-${key}-heading`,
+          type: 'symbol',
+          source: `ground-${key}`,
+          filter: [
+            'all',
+            ['==', ['geometry-type'], 'Point'],
+            ['has', 'bearing'],
+            ['!=', ['get', 'bearing'], null],
+          ],
+          layout: {
+            'icon-image': 'transit-heading',
+            'icon-size': 0.65,
+            'icon-rotate': ['get', 'bearing'],
+            'icon-rotation-alignment': 'map',
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+          },
+          paint: { 'icon-opacity': 0.95 },
+        });
+      }
 
       // Balloons (moving entities)
       map.addLayer({ id: 'balloon-dots', type: 'circle', source: 'balloons', paint: {
@@ -868,6 +1610,31 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         'text-field': ['concat', ['to-string', ['get','reading']], ' nSv/h'], 'text-size': 9, 'text-font': ['Open Sans Bold'],
         'text-offset': [0, 1.5], 'text-allow-overlap': false,
       }, paint: { 'text-color': ['match', ['get','status'], 'DANGER','#D32F2F', 'WARNING','#E65100', '#7E57C2'], 'text-halo-color': '#000', 'text-halo-width': 1 }});
+
+      map.addLayer({
+        id: 'street-view-ray',
+        type: 'line',
+        source: 'street-view-pin',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        paint: {
+          'line-color': '#80CBC4',
+          'line-width': 1.5,
+          'line-opacity': 0.75,
+          'line-dasharray': [2, 1.5],
+        },
+      });
+      map.addLayer({
+        id: 'street-view-dot',
+        type: 'circle',
+        source: 'street-view-pin',
+        filter: ['==', ['geometry-type'], 'Point'],
+        paint: {
+          'circle-radius': 6,
+          'circle-color': '#26A69A',
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': '#E8E6E0',
+        },
+      });
 
       // ══ OSIRIS SDK — Lattice Intelligence Mesh ══
       // Polybolos Style: Delicate, translucent, steel-blue splined mesh
@@ -919,15 +1686,29 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       }});
 
       // Maritime Ships (moving entities) — ocean teal family
+      const shipColor: maplibregl.ExpressionSpecification = [
+        'match', ['get', 'type'],
+        'military', '#D32F2F',
+        'tanker', '#E65100',
+        'cargo', '#26C6DA',
+        'passenger', '#7E57C2',
+        'fishing', '#66BB6A',
+        'pleasure', '#EC407A',
+        'sailing', '#EC407A',
+        'special', '#FFA726',
+        'highspeed', '#FFA726',
+        'other', '#B0BEC5',
+        '#B0BEC5',
+      ];
       map.addLayer({ id: 'ship-dots', type: 'circle', source: 'maritime-ships', paint: {
         'circle-radius': ['interpolate',['linear'],['zoom'], 1,2, 5,4, 10,6],
-        'circle-color': ['match', ['get','type'], 'military','#D32F2F', 'tanker','#E65100', 'cargo','#26C6DA', '#B0BEC5'],
+        'circle-color': shipColor,
         'circle-opacity': 0.75,
       }});
       map.addLayer({ id: 'ship-label', type: 'symbol', source: 'maritime-ships', minzoom: 5, layout: {
         'text-field': ['get','name'], 'text-size': 9, 'text-font': ['Open Sans Regular'],
         'text-offset': [0, 1.2], 'text-allow-overlap': false,
-      }, paint: { 'text-color': ['match', ['get','type'], 'military','#D32F2F', 'tanker','#E65100', 'cargo','#26C6DA', '#B0BEC5'], 'text-halo-color': '#000', 'text-halo-width': 1 }});
+      }, paint: { 'text-color': shipColor, 'text-halo-color': '#000', 'text-halo-width': 1 }});
 
 
       setMapReady(true);
@@ -948,18 +1729,47 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         onMouseCoords?.({ lat: e.lngLat.lat, lng: e.lngLat.lng });
       }
     });
-    /* The region dossier opens on a double right-click: two within
-       DOUBLE_RIGHT_MS and a few pixels of each other. A single right-click
-       was too easy to make by accident — it opened a panel and set off a
-       place lookup and a country's worth of Wikidata requests. A touch
-       long-press is already deliberate, so on a phone one still opens it;
-       asking for two there would make it all but unreachable. */
+    /* Right-click: context menu (Street view / Region dossier).
+       Double right-click still opens the region dossier directly. */
     let lastRightClick: { at: number; x: number; y: number } | null = null;
+    let ctxMenuEl: HTMLDivElement | null = null;
+    const dismissCtxMenu = () => {
+      ctxMenuEl?.remove();
+      ctxMenuEl = null;
+    };
+    const showCtxMenu = (screenX: number, screenY: number, lat: number, lng: number) => {
+      dismissCtxMenu();
+      const el = document.createElement('div');
+      el.setAttribute('data-osiris-ctx', '1');
+      el.style.cssText = `position:fixed;left:${screenX}px;top:${screenY}px;z-index:80;min-width:168px;background:#0c0e1a;border:1px solid rgba(128,203,196,0.35);border-radius:6px;padding:4px;box-shadow:0 8px 24px rgba(0,0,0,0.45);font:10px/1.2 JetBrains Mono,monospace;`;
+      const mkBtn = (label: string, onClick: () => void) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        b.style.cssText = 'display:block;width:100%;text-align:left;padding:8px 10px;border:0;border-radius:4px;background:transparent;color:#E8E6E0;cursor:pointer;letter-spacing:0.06em;';
+        b.onmouseenter = () => { b.style.background = 'rgba(128,203,196,0.12)'; };
+        b.onmouseleave = () => { b.style.background = 'transparent'; };
+        b.onclick = (ev) => { ev.stopPropagation(); dismissCtxMenu(); onClick(); };
+        return b;
+      };
+      el.appendChild(mkBtn('Street view here', () => onStreetViewRef.current?.({ lat, lng })));
+      el.appendChild(mkBtn('Region dossier', () => onRightClickRef.current?.({ lat, lng })));
+      document.body.appendChild(el);
+      ctxMenuEl = el;
+      const onDoc = (ev: MouseEvent) => {
+        if (ctxMenuEl && !ctxMenuEl.contains(ev.target as Node)) dismissCtxMenu();
+      };
+      setTimeout(() => document.addEventListener('mousedown', onDoc, { once: true }), 0);
+    };
     map.on('contextmenu', e => {
       e.preventDefault();
-      const open = () => onRightClick?.({ lat: e.lngLat.lat, lng: e.lngLat.lng });
-      if ((e.originalEvent as PointerEvent).pointerType === 'touch') { open(); return; }
-
+      const lat = e.lngLat.lat;
+      const lng = e.lngLat.lng;
+      const oe = e.originalEvent as PointerEvent & { clientX: number; clientY: number };
+      if (oe.pointerType === 'touch') {
+        showCtxMenu(oe.clientX, oe.clientY, lat, lng);
+        return;
+      }
       const now = performance.now();
       const { x, y } = e.point;
       const isSecond = lastRightClick !== null
@@ -967,10 +1777,28 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         && Math.hypot(x - lastRightClick.x, y - lastRightClick.y) < DOUBLE_RIGHT_SLOP_PX;
       if (isSecond) {
         lastRightClick = null;
-        open();
+        dismissCtxMenu();
+        onRightClickRef.current?.({ lat, lng });
       } else {
         lastRightClick = { at: now, x, y };
+        showCtxMenu(oe.clientX, oe.clientY, lat, lng);
       }
+    });
+    map.on('click', (e) => {
+      if (!streetViewLayerOnRef.current) return;
+      // Ignore clicks that hit interactive overlay features.
+      const hits = map.queryRenderedFeatures(e.point).filter((f) => {
+        const id = f.layer?.id || '';
+        return id.startsWith('ground-') || id.startsWith('ship-') || id.startsWith('cctv') || id === 'mapillary-image';
+      });
+      if (hits.length) {
+        // Coverage image dots: still open street view at click
+        if (hits.some((f) => f.layer?.id === 'mapillary-image')) {
+          onStreetViewRef.current?.({ lat: e.lngLat.lat, lng: e.lngLat.lng });
+        }
+        return;
+      }
+      onStreetViewRef.current?.({ lat: e.lngLat.lat, lng: e.lngLat.lng });
     });
     const reportViewState = () => { const c = map.getCenter(); onViewStateChange?.({ zoom: map.getZoom(), latitude: c.lat }); };
     map.on('load', reportViewState);
@@ -985,10 +1813,118 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     map.on('idle', reportCamera);
     reportCamera();
 
-    // ── POPUP HELPER ──
+    // ── POPUP HELPER (draggable, screen-pinned detail cards) ──
+    // Geo-anchored MapLibre popups move with zoom/pan. Pin to screen pixels so
+    // zoom leaves size and place unchanged; drag still repositions them.
+    let popupScreenPin: { x: number; y: number } | null = null;
+    let popupDragging = false;
+
+    const capturePopupScreenPin = (pop: maplibregl.Popup) => {
+      try {
+        const pt = map.project(pop.getLngLat());
+        popupScreenPin = { x: pt.x, y: pt.y };
+      } catch {
+        popupScreenPin = null;
+      }
+    };
+
+    const keepPopupScreenPinned = () => {
+      const pop = popupRef.current;
+      if (!pop || !popupScreenPin || popupDragging) return;
+      try {
+        pop.setLngLat(map.unproject(popupScreenPin as maplibregl.PointLike));
+      } catch { /* map mid-teardown */ }
+    };
+
+    map.on('move', keepPopupScreenPinned);
+    map.on('zoom', keepPopupScreenPinned);
+    map.on('pitch', keepPopupScreenPinned);
+    map.on('rotate', keepPopupScreenPinned);
+
+    const makePopupDraggable = (pop: maplibregl.Popup) => {
+      const root = pop.getElement();
+      if (!root) return;
+      const content = root.querySelector('.maplibregl-popup-content') as HTMLElement | null;
+      if (!content || content.dataset.dragBound === '1') return;
+      content.dataset.dragBound = '1';
+      content.style.cursor = 'grab';
+      content.style.touchAction = 'none';
+      content.style.resize = 'both';
+      content.style.overflow = 'auto';
+      content.style.minWidth = '180px';
+      content.style.minHeight = '100px';
+      content.style.maxWidth = 'min(90vw, 640px)';
+      content.style.maxHeight = 'min(80vh, 720px)';
+      content.title = content.title || 'Drag to move · resize from corner';
+
+      let startX = 0;
+      let startY = 0;
+      let origin = pop.getLngLat();
+
+      const onDown = (e: PointerEvent) => {
+        const t = e.target as HTMLElement | null;
+        if (t?.closest('a, button, input, textarea, select, .maplibregl-popup-close-button')) return;
+        popupDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        origin = pop.getLngLat();
+        content.style.cursor = 'grabbing';
+        content.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      };
+      const onMove = (e: PointerEvent) => {
+        if (!popupDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const startPt = map.project(origin);
+        const next = { x: startPt.x + dx, y: startPt.y + dy };
+        popupScreenPin = next;
+        pop.setLngLat(map.unproject(next as maplibregl.PointLike));
+      };
+      const onUp = (e: PointerEvent) => {
+        if (!popupDragging) return;
+        popupDragging = false;
+        capturePopupScreenPin(pop);
+        content.style.cursor = 'grab';
+        try { content.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+      };
+
+      content.addEventListener('pointerdown', onDown);
+      content.addEventListener('pointermove', onMove);
+      content.addEventListener('pointerup', onUp);
+      content.addEventListener('pointercancel', onUp);
+    };
+
     const popup = (coords: any, html: string) => {
       popupRef.current?.remove();
-      popupRef.current = new maplibregl.Popup({ closeButton: true, maxWidth: '420px', offset: 14 }).setLngLat(coords).setHTML(html).addTo(map);
+      popupScreenPin = null;
+      popupDragging = false;
+      const pop = new maplibregl.Popup({
+        closeButton: true,
+        maxWidth: 'none',
+        offset: 14,
+        // Keep tip; drag moves the whole popup including anchor on the map.
+        // CSS resize:both on content (see globals) makes it resizable.
+        className: 'osiris-draggable-popup',
+      })
+        .setLngLat(coords)
+        .setHTML(html)
+        .addTo(map);
+      popupRef.current = pop;
+      const arm = () => {
+        makePopupDraggable(pop);
+        capturePopupScreenPin(pop);
+      };
+      // Content exists after addTo; next frame covers late DOM attach.
+      requestAnimationFrame(arm);
+      pop.on('open', arm);
+      pop.on('close', () => {
+        if (popupRef.current === pop) {
+          popupRef.current = null;
+          popupScreenPin = null;
+          popupDragging = false;
+        }
+      });
     };
     const pStyle = `background:rgba(12,14,26,0.95);backdrop-filter:blur(16px);border-radius:10px;padding:16px;font-family:'JetBrains Mono',monospace;`;
     const linkStyle = `display:inline-block;margin-top:8px;padding:5px 12px;font-size:10px;letter-spacing:0.12em;text-decoration:none;border-radius:5px;font-family:'JetBrains Mono',monospace;`;
@@ -1014,8 +1950,23 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         const coords = (e.features[0].geometry as any).coordinates;
         const cs = (p.callsign||'').trim();
 
+        const trackSrc = map.getSource('selected-flight-track') as maplibregl.GeoJSONSource | undefined;
+        const clearFlightTrack = () => trackSrc?.setData(EMPTY_FC as never);
+        clearFlightTrack();
+        const flightId = String(p.icao24 || cs || '').toLowerCase() || 'unknown';
+        setTrackSel((s) =>
+          setFlightTrack(s, {
+            kind: 'flight',
+            id: flightId,
+            label: cs || flightId,
+            status: 'loading',
+          }),
+        );
+
         // Show initial popup immediately (without route data)
         const routeLoadingId = `route-info-${Date.now()}`;
+        const trackLoadingId = `track-info-${Date.now()}`;
+        const wantedHex = String(p.icao24 || '').toLowerCase();
         popup(coords, `<div style="${pStyle}border:1px solid rgba(255,255,255,0.08);">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
             <span style="color:#E8E6E0;font-size:15px;font-weight:700;letter-spacing:0.08em;">${htmlEsc(cs)}</span>
@@ -1032,6 +1983,9 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
           <div id="ac-${idSafe(p.icao24||'')}" style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">
             <span style="color:#5C5A54;font-size:9px;letter-spacing:0.1em;">IDENTIFYING AIRFRAME…</span>
           </div>
+          <div id="${trackLoadingId}" style="margin-top:6px;">
+            <span style="color:#5C5A54;font-size:9px;letter-spacing:0.1em;">LOADING FLOWN TRACK…</span>
+          </div>
           <button onclick="window.osirisWatchFlight && window.osirisWatchFlight({ icao24: '${idSafe(p.icao24||'')}', callsign: '${idSafe(cs)}' })" style="width:100%;margin-top:8px;padding:6px 12px;background:rgba(0,229,255,0.10);border:1px solid rgba(0,229,255,0.35);color:#7FE9FF;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:bold;letter-spacing:0.1em;border-radius:4px;cursor:pointer;">+ WATCH THIS AIRCRAFT</button>
           <div id="${routeLoadingId}" style="margin-top:8px;padding:6px;border-top:1px solid rgba(255,255,255,0.06);text-align:center;">
             <span style="color:#5C5A54;font-size:9px;letter-spacing:0.1em;">RESOLVING ROUTE…</span>
@@ -1043,29 +1997,59 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
           </div>
         </div>`);
 
-        // The transponder only reports a type code (often nothing at all), so
-        // resolve the real manufacturer/model and registration out of band.
-        if (p.icao24) {
-          fetch(`/api/aircraft?icao24=${encodeURIComponent(p.icao24)}`)
+        // Identity + flown path from adsb.lol traces (current leg only).
+        if (wantedHex) {
+          fetch(`/api/aircraft?icao24=${encodeURIComponent(wantedHex)}`)
             .then(r => (r.ok ? r.json() : null))
             .then((d) => {
               const el = document.getElementById(`ac-${p.icao24}`);
-              if (!el || !d || d.error) {
+              const trackEl = document.getElementById(trackLoadingId);
+              if (!d || d.error) {
                 if (el) el.innerHTML = '<span style="color:#5C5A54;font-size:9px;">AIRFRAME NOT IN REGISTRY</span>';
+                if (trackEl) trackEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">NO FLOWN TRACK</span>';
+                clearFlightTrack();
+                setTrackSel((s) => setFlightTrack(s, { kind: 'flight', id: flightId, label: cs || flightId, status: 'error' }));
                 return;
               }
               const bits = [d.registration, d.typeCode, d.operator].filter(Boolean)
                 .map((x: string) => htmlEsc(String(x))).join(' · ');
-              el.innerHTML =
-                `<div style="color:#E8E6E0;font-size:11px;line-height:1.35;">${htmlEsc(d.model || 'Unidentified type')}</div>` +
-                (bits ? `<div style="color:#78909C;font-size:9px;margin-top:2px;">${bits}</div>` : '');
+              if (el) {
+                el.innerHTML =
+                  `<div style="color:#E8E6E0;font-size:11px;line-height:1.35;">${htmlEsc(d.model || 'Unidentified type')}</div>` +
+                  (bits ? `<div style="color:#78909C;font-size:9px;margin-top:2px;">${bits}</div>` : '');
+              }
+              const track = Array.isArray(d.track) ? d.track as [number, number][] : [];
+              if (track.length >= 2) {
+                trackSrc?.setData({
+                  type: 'FeatureCollection',
+                  features: [{
+                    type: 'Feature',
+                    properties: { icao24: wantedHex, callsign: cs, points: track.length },
+                    geometry: { type: 'LineString', coordinates: track },
+                  }],
+                } as never);
+                setTrackSel((s) => setFlightTrack(s, { kind: 'flight', id: flightId, label: cs || flightId, status: 'ready' }));
+                if (trackEl) {
+                  trackEl.innerHTML =
+                    `<span style="color:#7FE9FF;font-size:9px;letter-spacing:0.1em;">FLOWN TRACK · ${track.length} PTS</span>`;
+                }
+              } else if (trackEl) {
+                trackEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">NO FLOWN TRACK</span>';
+                clearFlightTrack();
+                setTrackSel((s) => setFlightTrack(s, { kind: 'flight', id: flightId, label: cs || flightId, status: 'error' }));
+              }
             })
-            .catch(() => {});
+            .catch(() => {
+              const trackEl = document.getElementById(trackLoadingId);
+              if (trackEl) trackEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">TRACK UNAVAILABLE</span>';
+              clearFlightTrack();
+              setTrackSel((s) => setFlightTrack(s, { kind: 'flight', id: flightId, label: cs || flightId, status: 'error' }));
+            });
+        } else {
+          setTrackSel((s) => setFlightTrack(s, { kind: 'flight', id: flightId, label: cs || flightId, status: 'error' }));
         }
 
-        // Resolve origin/destination for the readout only. The line this used
-        // to draw was a straight hop between two airports, which is not the
-        // path flown — watched aircraft draw their real reported track instead.
+        // Scheduled origin/destination readout only (not drawn as a fake hop).
         const cleanCallsign = cs.replace(/\s+/g, '');
         const routeParams = new URLSearchParams({
           callsign: cleanCallsign,
@@ -1157,7 +2141,8 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       'gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots',
       'balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots',
       'sdk-sea','sdk-air','sdk-intel','malware-dots','cyber-heads','gdelt-events-dots',
-      'cf-outage-dots','cf-attack-dots','flight-dots','military-dots','jet-dots','private-dots','alert-pin-dots']);
+      'cf-outage-dots','cf-attack-dots','fl-commercial','fl-private','fl-jets','fl-military','alert-pin-dots',
+      'ground-gtfs-dots','ground-gtfs-heading','ground-trains-dots','ground-trains-heading']);
 
     // Satellites are picked on the GPU: the pick pass runs the same vertex
     // shader as the visible one, so the target is always exactly where the
@@ -1180,7 +2165,11 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       // Clicking past every satellite is how a selection is dismissed, so an
       // empty click has to clear the ring and the track rather than leave them
       // lit over nothing.
-      if (idx == null || !p) { clearSat(); return; }
+      if (idx == null || !p) {
+        clearSat();
+        // Empty map click must keep ship / transit / flight track overlays.
+        return;
+      }
 
       // The readout is a panel, not a MapLibre popup: a popup can only anchor
       // to a ground coordinate, and these markers are drawn at altitude. Any
@@ -1424,8 +2413,9 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     // ── OSIRIS SDK link click ──
     const SDK_SOURCE_URLS: Record<string, string> = {
       'AIS Maritime': 'https://www.marinetraffic.com',
-      'AIS Stream': 'https://aisstream.io',
-      'AIS → Lattice': 'https://aisstream.io',
+      'AISHub': 'https://www.aishub.net',
+      'Open Waters AIS': 'https://openwaters.io/ais/',
+      'AIS → Lattice': 'https://openwaters.io/ais/',
       'ADS-B / OpenSky': 'https://opensky-network.org',
       'ADS-B → Lattice': 'https://opensky-network.org',
       'Naval Intelligence': 'https://www.odni.gov',
@@ -1489,9 +2479,331 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     });
 
     // ── Generic hover for clickables ──
-    ['conflict-icons','cctv-dots','eq-circles','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots','balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots','sdk-sea','sdk-sea-glow','sdk-sea-atmo','sdk-air','sdk-air-glow','sdk-air-atmo','sdk-intel','sdk-intel-glow','sdk-intel-atmo','malware-dots','cyber-heads','gdelt-events-dots','cf-outage-dots','cf-attack-dots','alert-pin-dots'].forEach(layer => {
+    ['conflict-icons','cctv-dots','eq-circles','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots','balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots','sdk-sea','sdk-sea-glow','sdk-sea-atmo','sdk-air','sdk-air-glow','sdk-air-atmo','sdk-intel','sdk-intel-glow','sdk-intel-atmo','malware-dots','cyber-heads','gdelt-events-dots','cf-outage-dots','cf-attack-dots','alert-pin-dots','curiosities-clusters','curiosities-dots','curiosities-notes-dots','ground-uap-clusters','ground-uap-dots','ground-abandoned-line','ground-abandoned-dots','ground-trails-line','ground-public_access-fill','ground-public_access-line','ground-nightlife-clusters','ground-nightlife-dots','ground-gtfs-dots','ground-gtfs-heading','ground-trains-line','ground-trains-dots','ground-trains-heading','ground-freight_rail-line','ground-transit_alerts-dots','ground-gbfs-dots','ground-gauges-dots','ground-buoys-dots','ground-lightning-dots','ground-storms-fill','ground-storms-line','ground-storms-dots','ground-aprs-dots','ground-road_incidents-dots','ground-civic_311-clusters','ground-civic_311-dots','ground-vacant-dots','ground-historic_maps-fill','ground-historic_maps-line','transit-route-line'].forEach(layer => {
       map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
+    });
+
+    const syncCuriosityNotesOverlay = () => {
+      const notesSrc = map.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+      notesSrc?.setData(notesToGeoJSON(curiosityNotesRef.current) as never);
+    };
+    syncCuriosityNotesOverlay();
+
+    const openCuriosityEditor = (pinIndex: number, lng: number, lat: number) => {
+      const existing = getCuriosityNote(curiosityNotesRef.current, pinIndex);
+      const labelVal = htmlEsc(existing?.label ?? '');
+      const notesVal = htmlEsc(existing?.notes ?? '');
+      const formId = `curio-note-${pinIndex}-${Date.now()}`;
+      popup([lng, lat], `<div style="${pStyle}border:1px solid rgba(179,136,255,0.45);min-width:280px;">
+        <div style="color:#B388FF;font-size:11px;font-weight:700;letter-spacing:0.14em;margin-bottom:6px;">CURIOSITY PIN</div>
+        <div style="font-size:9px;color:#E8E6E0;margin-bottom:10px;">${lat.toFixed(5)}°, ${lng.toFixed(5)}° · #${pinIndex}</div>
+        <label style="display:block;font-size:8px;color:#8A8880;letter-spacing:0.12em;margin-bottom:4px;">LABEL</label>
+        <input id="${formId}-label" type="text" maxlength="80" value="${labelVal}" placeholder="Short name on the map"
+          style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:7px 8px;border-radius:6px;border:1px solid rgba(179,136,255,0.35);background:rgba(0,0,0,0.35);color:#F3E5FF;font:11px 'JetBrains Mono',monospace;" />
+        <label style="display:block;font-size:8px;color:#8A8880;letter-spacing:0.12em;margin-bottom:4px;">NOTES</label>
+        <textarea id="${formId}-notes" rows="4" maxlength="4000" placeholder="What you found, when, links…"
+          style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:7px 8px;border-radius:6px;border:1px solid rgba(179,136,255,0.35);background:rgba(0,0,0,0.35);color:#E8E6E0;font:11px 'JetBrains Mono',monospace;resize:vertical;">${notesVal}</textarea>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button type="button" id="${formId}-save" style="${linkStyle}flex:1;cursor:pointer;color:#12081c;border:1px solid #B388FF;background:#B388FF;margin-top:0;">SAVE</button>
+          <button type="button" id="${formId}-clear" style="${linkStyle}cursor:pointer;color:#B388FF;border:1px solid rgba(179,136,255,0.4);background:transparent;margin-top:0;">CLEAR</button>
+          <button type="button" id="${formId}-export" style="${linkStyle}cursor:pointer;color:#8A8880;border:1px solid rgba(255,255,255,0.15);background:transparent;margin-top:0;" title="Download all notes as GeoJSON">EXPORT ALL</button>
+        </div>
+        <div id="${formId}-status" style="margin-top:8px;font-size:8px;color:#5C5A54;letter-spacing:0.08em;"></div>
+        <a href="https://drive.google.com/file/d/1ji3tp5Mi-0JG85jfIaV966xpkU8PLhcg/view" target="_blank" rel="noopener noreferrer" style="${linkStyle}display:inline-block;width:100%;text-align:center;color:#B388FF;border:1px solid rgba(179,136,255,0.4);background:rgba(179,136,255,0.12);box-sizing:border-box;">[ SOURCE KML ↗ ]</a>
+      </div>`);
+      const root = popupRef.current?.getElement();
+      if (!root) return;
+      const status = root.querySelector(`#${formId}-status`) as HTMLElement | null;
+      const labelEl = root.querySelector(`#${formId}-label`) as HTMLInputElement | null;
+      const notesEl = root.querySelector(`#${formId}-notes`) as HTMLTextAreaElement | null;
+      root.querySelector(`#${formId}-save`)?.addEventListener('click', () => {
+        curiosityNotesRef.current = upsertCuriosityNote(curiosityNotesRef.current, {
+          i: pinIndex,
+          lat,
+          lng,
+          label: labelEl?.value ?? '',
+          notes: notesEl?.value ?? '',
+        });
+        saveCuriosityNotes(curiosityNotesRef.current);
+        syncCuriosityNotesOverlay();
+        if (status) status.textContent = 'SAVED LOCALLY';
+      });
+      root.querySelector(`#${formId}-clear`)?.addEventListener('click', () => {
+        if (labelEl) labelEl.value = '';
+        if (notesEl) notesEl.value = '';
+        curiosityNotesRef.current = upsertCuriosityNote(curiosityNotesRef.current, {
+          i: pinIndex, lat, lng, label: '', notes: '',
+        });
+        saveCuriosityNotes(curiosityNotesRef.current);
+        syncCuriosityNotesOverlay();
+        if (status) status.textContent = 'CLEARED';
+      });
+      root.querySelector(`#${formId}-export`)?.addEventListener('click', () => {
+        const fc = notesToExportGeoJSON(curiosityNotesRef.current);
+        downloadFile(
+          `osiris-curiosity-notes-${new Date().toISOString().slice(0, 10)}.geojson`,
+          JSON.stringify(fc, null, 2),
+          'application/geo+json',
+        );
+        if (status) status.textContent = `EXPORTED ${fc.features.length} NOTES`;
+      });
+    };
+
+    // ── Curiosities atlas ──
+    map.on('click', 'curiosities-clusters', (e: any) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      const clusterId = feature.properties?.cluster_id;
+      const src = map.getSource('curiosities') as maplibregl.GeoJSONSource;
+      src.getClusterExpansionZoom(clusterId).then((zoom) => {
+        map.easeTo({ center: feature.geometry.coordinates, zoom });
+      }).catch(() => { /* source not ready */ });
+    });
+    map.on('click', 'curiosities-dots', (e: any) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const coords = (f.geometry as GeoJSON.Point).coordinates;
+      const pinIndex = Number(f.properties?.i);
+      if (!Number.isFinite(pinIndex)) return;
+      openCuriosityEditor(pinIndex, coords[0], coords[1]);
+    });
+    map.on('click', 'curiosities-notes-dots', (e: any) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const coords = (f.geometry as GeoJSON.Point).coordinates;
+      const pinIndex = Number(f.properties?.i);
+      if (!Number.isFinite(pinIndex)) return;
+      openCuriosityEditor(pinIndex, coords[0], coords[1]);
+    });
+
+    // ── GROUND layers ──
+    const groundPopupLayers = [
+      'ground-uap-dots', 'ground-abandoned-line', 'ground-abandoned-dots',
+      'ground-trails-line', 'ground-public_access-fill', 'ground-public_access-line',
+      'ground-nightlife-dots', 'ground-gtfs-dots', 'ground-trains-line', 'ground-trains-dots',
+      'ground-freight_rail-line',
+      'ground-transit_alerts-dots', 'ground-gbfs-dots',
+      'ground-gauges-dots', 'ground-buoys-dots', 'ground-lightning-dots',
+      'ground-storms-fill', 'ground-storms-line', 'ground-storms-dots',
+      'ground-aprs-dots', 'ground-road_incidents-dots',
+      'ground-civic_311-dots',
+      'ground-vacant-dots', 'ground-historic_maps-fill', 'ground-historic_maps-line',
+    ];
+    for (const clusterLayer of ['ground-uap-clusters', 'ground-nightlife-clusters', 'ground-civic_311-clusters'] as const) {
+      map.on('click', clusterLayer, (e: any) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+        const clusterId = feature.properties?.cluster_id;
+        const sourceId = clusterLayer.replace(/-clusters$/, '');
+        const src = map.getSource(sourceId) as maplibregl.GeoJSONSource;
+        src.getClusterExpansionZoom(clusterId).then((zoom) => {
+          map.easeTo({ center: feature.geometry.coordinates, zoom });
+        }).catch(() => { /* source not ready */ });
+      });
+    }
+    const clearTransitRoute = () => {
+      transitRouteAbortRef.current?.abort();
+      transitRouteAbortRef.current = null;
+      (map.getSource('transit-route') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+      (map.getSource('transit-route-stops') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
+    };
+    groundPopupLayers.forEach((layerId) => {
+      map.on('click', layerId, (e: any) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties || {};
+        const g = f.geometry as GeoJSON.Geometry;
+        const coords =
+          g?.type === 'Point'
+            ? (g as GeoJSON.Point).coordinates.slice()
+            : [e.lngLat.lng, e.lngLat.lat];
+        const keyFromLayer = layerId
+          .replace(/^ground-/, '')
+          .replace(/-(dots|line|fill)$/, '') as GroundLayerKey;
+        const color = GROUND_COLORS[keyFromLayer] || '#00E5FF';
+        const title = p.name || p.title || p.siteName || p.label || p.city || 'Untitled';
+        const kind = p.kind || `ground_${keyFromLayer}`;
+        const attribution = p.attribution || '';
+        const isUap = kind === 'ground_uap' || keyFromLayer === 'uap';
+        const isTransit =
+          kind === 'ground_trains' ||
+          kind === 'ground_gtfs' ||
+          keyFromLayer === 'trains' ||
+          keyFromLayer === 'gtfs';
+        const isTrainTrack = kind === 'ground_train_tracks';
+        const isFreightRail = kind === 'ground_freight_rail' || keyFromLayer === 'freight_rail';
+        const isTrails = kind === 'ground_trails' || keyFromLayer === 'trails';
+        const isPublicAccess = kind === 'ground_public_access' || keyFromLayer === 'public_access';
+        const locUrl = urlSafe(p.locUrl);
+        const hasLoc = locUrl !== '#' && !!p.locUrl;
+        const row = (label: string, value: unknown) => {
+          if (value == null || value === '') return '';
+          return `<div><span style="color:#5C5A54;">${label}</span><br/><span style="color:#E8E6E0;">${htmlEsc(String(value))}</span></div>`;
+        };
+        const speedVal =
+          p.speed != null && Number.isFinite(Number(p.speed))
+            ? `${(Number(p.speed) * 2.23694).toFixed(0)} mph`
+            : null;
+        const transitTitle =
+          p.label ||
+          p.routeShortName ||
+          p.routeId ||
+          p.vehicleId ||
+          p.agencyName ||
+          title;
+        const schedId = `transit-sched-${Date.now()}`;
+        const transitBody = isTransit && !isTrainTrack
+          ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:9px;margin-bottom:8px;">
+              ${row('AGENCY', p.agencyName)}
+              ${row('TYPE', p.routeTypeLabel || (kind === 'ground_trains' ? 'Rail' : 'Transit'))}
+              ${row('ROUTE', p.routeShortName || p.routeLongName || p.routeId)}
+              ${row('STATUS', p.currentStatus)}
+              ${row('DIRECTION', p.directionId != null ? `Dir ${p.directionId}` : (p.headsign || p.destination))}
+              ${row('TRIP START', [p.startDate, p.startTime].filter(Boolean).join(' ') || null)}
+              ${row('ORIGIN', p.origin)}
+              ${row('DESTINATION', p.destination || p.headsign)}
+              ${row('STOP', p.stopId)}
+              ${row('OCCUPANCY', p.occupancyStatus)}
+              ${row('SPEED', speedVal)}
+              ${row('BEARING', p.bearing != null ? `${Number(p.bearing).toFixed(0)}°` : null)}
+              ${row('TRIP', p.tripId)}
+              ${row('VEHICLE', p.vehicleId)}
+            </div>
+            <div id="${schedId}" style="margin-top:4px;"></div>`
+          : isFreightRail
+            ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:9px;margin-bottom:8px;">
+              ${row('OPERATOR', p.operator)}
+              ${row('USAGE', p.usage)}
+              ${row('SERVICE', p.service)}
+              ${row('GOODS', p.goods)}
+            </div>
+            <div style="font-size:9px;color:#8A8880;margin-bottom:6px;">Infrastructure only · no live freight positions</div>`
+          : isTrails
+            ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:9px;margin-bottom:8px;">
+              ${row('SUBKIND', p.subkind)}
+            </div>`
+            : isPublicAccess
+              ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:9px;margin-bottom:8px;">
+              ${row('AGENCY', p.agency)}
+              ${row('SUBKIND', p.subkind)}
+            </div>
+            <div style="font-size:9px;color:#8A8880;margin-bottom:6px;">Public passage land — not a permit.</div>`
+              : `<div style="font-size:9px;color:#8A8880;margin-bottom:6px;">KIND · ${htmlEsc(kind)}</div>`;
+        popup(coords, `<div style="${pStyle}border:1px solid ${color}4d;min-width:220px;">
+          <div style="color:${color};font-size:11px;font-weight:700;letter-spacing:0.12em;margin-bottom:6px;">${htmlEsc(String(kind).replace(/^ground_/, '').toUpperCase())}</div>
+          <div style="color:#E8E6E0;font-size:12px;font-weight:700;margin-bottom:8px;">${htmlEsc(isTransit && !isTrainTrack ? transitTitle : title)}</div>
+          ${transitBody}
+          ${isUap ? '<div style="font-size:9px;color:#FFB300;margin-bottom:8px;line-height:1.4;">Approximate location (city-level).</div>' : ''}
+          ${hasLoc ? `<a href="${locUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}color:#00E5FF;border:1px solid rgba(0,229,255,0.4);background:rgba(0,229,255,0.1);display:inline-block;width:100%;text-align:center;box-sizing:border-box;">[ LIBRARY OF CONGRESS ↗ ]</a>` : ''}
+          ${attribution ? `<div style="font-size:7px;color:#5C5A54;text-align:center;letter-spacing:0.08em;margin-top:10px;">SOURCE: ${htmlEsc(attribution)}</div>` : ''}
+        </div>`);
+
+        if (isTransit && !isTrainTrack && p.agencyId && (p.tripId || p.routeId)) {
+          const agencyId = String(p.agencyId);
+          const tripId = p.tripId ? String(p.tripId) : '';
+          const routeId = p.routeId ? String(p.routeId) : '';
+          const transitDockId = `${agencyId}:${tripId || routeId}`;
+          const transitLabel = String(p.routeShortName || p.label || tripId || routeId);
+          setTrackSel((s) =>
+            setTransitTrack(s, {
+              kind: 'transit',
+              id: transitDockId,
+              label: transitLabel,
+              status: 'loading',
+              color,
+            }),
+          );
+          const routeSrc = map.getSource('transit-route') as maplibregl.GeoJSONSource | undefined;
+          const stopsSrc = map.getSource('transit-route-stops') as maplibregl.GeoJSONSource | undefined;
+          transitRouteAbortRef.current?.abort();
+          transitRouteAbortRef.current = new AbortController();
+          const signal = transitRouteAbortRef.current.signal;
+          const q = new URLSearchParams({ agency: agencyId });
+          if (tripId) q.set('tripId', tripId);
+          if (routeId) q.set('routeId', routeId);
+          if (p.stopId) q.set('stopId', String(p.stopId));
+          if (p.currentStopSequence != null && p.currentStopSequence !== '') {
+            q.set('stopSequence', String(p.currentStopSequence));
+          } else if (p.stopSequence != null && p.stopSequence !== '') {
+            q.set('stopSequence', String(p.stopSequence));
+          }
+          void fetch(`/api/layers/gtfs-shape?${q}`, { signal })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((fc) => {
+              if (signal.aborted) return;
+              if (!routeSrc || !fc?.features?.length) {
+                routeSrc?.setData(EMPTY_FC);
+                stopsSrc?.setData(EMPTY_FC);
+                setTrackSel((s) =>
+                  setTransitTrack(s, {
+                    kind: 'transit',
+                    id: transitDockId,
+                    label: transitLabel,
+                    status: 'error',
+                    color,
+                  }),
+                );
+                return;
+              }
+              const lineFeats = (fc.features as GeoJSON.Feature[])
+                .filter((feat) => feat.geometry?.type === 'LineString')
+                .map((feat) => ({
+                  ...feat,
+                  properties: { ...(feat.properties || {}), color },
+                }));
+              const stopFeats = (fc.features as GeoJSON.Feature[]).filter(
+                (feat) => feat.properties?.kind === 'ground_transit_stop',
+              );
+              routeSrc.setData({ type: 'FeatureCollection', features: lineFeats });
+              stopsSrc?.setData({ type: 'FeatureCollection', features: stopFeats });
+              setTrackSel((s) =>
+                setTransitTrack(s, {
+                  kind: 'transit',
+                  id: transitDockId,
+                  label: transitLabel,
+                  status: 'ready',
+                  color,
+                }),
+              );
+              const schedEl = document.getElementById(schedId);
+              if (schedEl && stopFeats.length) {
+                const upcoming = stopFeats.filter((f) => {
+                  const p = f.properties || {};
+                  return p.isNext === true || p.isNext === 'true' || (!p.isCurrent && p.isCurrent !== 'true');
+                });
+                const nextFirst = stopFeats.find((f) => f.properties?.isNext === true || f.properties?.isNext === 'true');
+                const fromIdx = nextFirst ? stopFeats.indexOf(nextFirst) : stopFeats.findIndex((f) => !(f.properties?.isCurrent === true || f.properties?.isCurrent === 'true'));
+                const schedRows = (fromIdx >= 0 ? stopFeats.slice(fromIdx) : upcoming).slice(0, 8);
+                if (schedRows.length) {
+                  const sched = schedRows.map((f) => {
+                    const n = f.properties?.name || f.properties?.stopId || '';
+                    const t = f.properties?.departure || f.properties?.arrival || '';
+                    return `<div style="display:flex;justify-content:space-between;gap:8px;"><span>${htmlEsc(String(n))}</span><span style="color:#8A8880;">${htmlEsc(String(t))}</span></div>`;
+                  }).join('');
+                  schedEl.innerHTML = `<div style="font-size:8px;color:#5C5A54;letter-spacing:0.1em;margin-bottom:4px;">NEXT STOPS</div>${sched}`;
+                }
+              }
+            })
+            .catch(() => {
+              if (signal.aborted) return;
+              routeSrc?.setData(EMPTY_FC);
+              stopsSrc?.setData(EMPTY_FC);
+              setTrackSel((s) =>
+                setTransitTrack(s, {
+                  kind: 'transit',
+                  id: transitDockId,
+                  label: transitLabel,
+                  status: 'error',
+                  color,
+                }),
+              );
+            });
+        } else {
+          clearTransitRoute();
+          setTrackSel((s) => setTransitTrack(s, null));
+        }
+      });
     });
 
     // ── Scan Targets click ──
@@ -1590,29 +2902,208 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       </div>`);
     });
 
-    // ── Maritime Ships ──
+    // ── Maritime Ships (detail + toggle AIS track via selection store) ──
     map.on('click', 'ship-dots', e => {
       if (!e.features?.length) return;
       const p = e.features[0].properties as any;
       const coords = (e.features[0].geometry as any).coordinates;
-      const color = p.type === 'military' ? '#FF1744' : p.type === 'tanker' ? '#FF9500' : '#00E5FF';
-      const icon = p.type === 'military' ? '⚔️' : p.type === 'tanker' ? '🛢️' : '🚢';
-      
+      const color = p.type === 'military' ? '#FF1744' : p.type === 'tanker' ? '#FF9500' : '#26C6DA';
+      const mmsi = String(p.mmsi || '').replace(/\D/g, '');
+      const shipLabel = String(p.name || mmsi || 'VESSEL');
+
+      const detailId = `ship-detail-${Date.now()}`;
+      const trackLoadingId = `ship-track-${Date.now()}`;
       popup(coords, `<div style="${pStyle}border:1px solid ${color}60;box-shadow:inset 0 0 12px ${color}15;">
         <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid ${color}40;padding-bottom:6px;margin-bottom:8px;">
-          <div style="color:${color};font-size:12px;font-weight:700;letter-spacing:0.1em;">${icon} [ ${(p.type||'VESSEL').toUpperCase()} ]</div>
-          <div style="color:#5C5A54;font-size:9px;">FLAG: ${p.flag||'UNK'}</div>
+          <div style="color:${color};font-size:12px;font-weight:700;letter-spacing:0.1em;">[ ${(p.type||'VESSEL').toUpperCase()} ]</div>
+          <div style="color:#5C5A54;font-size:9px;">MMSI ${htmlEsc(mmsi || '—')}</div>
         </div>
-        <div style="color:#E8E6E0;font-size:11px;font-weight:bold;margin-bottom:10px;">${p.name || 'UNIDENTIFIED VESSEL'}</div>
+        <div style="color:#E8E6E0;font-size:13px;font-weight:bold;margin-bottom:10px;">${htmlEsc(p.name || 'UNIDENTIFIED VESSEL')}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:9px;margin-bottom:8px;background:rgba(0,0,0,0.3);padding:6px;border-radius:4px;">
-          <div><span style="color:#5C5A54;">SPEED</span><br/><span style="color:${color};font-family:monospace;">${Number(p.speed).toFixed(1)} kn</span></div>
-          <div><span style="color:#5C5A54;">HEADING</span><br/><span style="color:${color};font-family:monospace;">${Number(p.heading).toFixed(0)}°</span></div>
-          <div><span style="color:#5C5A54;">LATITUDE</span><br/><span style="color:#E8E6E0;font-family:monospace;">${coords[1].toFixed(4)}°</span></div>
-          <div><span style="color:#5C5A54;">LONGITUDE</span><br/><span style="color:#E8E6E0;font-family:monospace;">${coords[0].toFixed(4)}°</span></div>
+          <div><span style="color:#5C5A54;">SPEED</span><br/><span style="color:${color};font-family:monospace;">${Number(p.speed||0).toFixed(1)} kn</span></div>
+          <div><span style="color:#5C5A54;">HEADING</span><br/><span style="color:${color};font-family:monospace;">${Number(p.heading||0).toFixed(0)}°</span></div>
+          <div><span style="color:#5C5A54;">FLAG</span><br/><span style="color:#E8E6E0;font-family:monospace;">${htmlEsc(p.flag||'—')}</span></div>
+          <div><span style="color:#5C5A54;">DEST</span><br/><span style="color:#E8E6E0;font-family:monospace;">${htmlEsc(p.destination || '—')}</span></div>
+          <div><span style="color:#5C5A54;">LAT</span><br/><span style="color:#E8E6E0;font-family:monospace;">${coords[1].toFixed(4)}°</span></div>
+          <div><span style="color:#5C5A54;">LNG</span><br/><span style="color:#E8E6E0;font-family:monospace;">${coords[0].toFixed(4)}°</span></div>
         </div>
-        <div><span style="color:#5C5A54;font-size:9px;">DESTINATION: </span><span style="color:#E8E6E0;font-size:9px;">${p.destination || 'UNKNOWN'}</span></div>
-        <a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:${p.mmsi}" target="_blank" style="${linkStyle}flex:1;text-align:center;color:${color};border:1px solid ${color}40;background:${color}15;display:inline-block;width:100%;box-sizing:border-box;margin-top:4px;">[ OPEN SOURCE ↗ ]</a>
+        <div id="${detailId}" style="margin-top:4px;padding-top:6px;border-top:1px solid ${color}30;">
+          <span style="color:#5C5A54;font-size:9px;letter-spacing:0.1em;">LOADING AIS DETAIL…</span>
+        </div>
+        <div id="${trackLoadingId}" style="margin-top:6px;">
+          <span style="color:#5C5A54;font-size:9px;letter-spacing:0.1em;">${mmsi ? 'TOGGLE AIS TRACK…' : 'NO AIS TRACK'}</span>
+        </div>
+        <div id="${trackLoadingId}-slider" style="margin-top:8px;display:none;">
+          <div style="display:flex;justify-content:space-between;font-size:8px;color:#5C5A54;letter-spacing:0.08em;margin-bottom:4px;">
+            <span>TRAIL</span><span id="${trackLoadingId}-label">1 DAY</span>
+          </div>
+          <input id="${trackLoadingId}-range" type="range" min="0" max="4" step="1" value="0"
+            style="width:100%;accent-color:${color};cursor:pointer;"
+            list="${trackLoadingId}-ticks" />
+          <datalist id="${trackLoadingId}-ticks">
+            <option value="0" label="1d"></option>
+            <option value="1" label="1w"></option>
+            <option value="2" label="1m"></option>
+            <option value="3" label="6m"></option>
+            <option value="4" label="all"></option>
+          </datalist>
+          <div style="display:flex;justify-content:space-between;font-size:7px;color:#5C5A54;margin-top:2px;">
+            <span>1d</span><span>1w</span><span>1m</span><span>6m</span><span>all</span>
+          </div>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap;">
+          ${mmsi ? `<a href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:${encodeURIComponent(mmsi)}" target="_blank" style="${linkStyle}color:${color};border:1px solid ${color}40;background:${color}15;">MARINETRAFFIC</a>` : ''}
+          <a href="https://openwaters.io/ais/" target="_blank" style="${linkStyle}color:#78909C;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);">OPEN WATERS</a>
+        </div>
       </div>`);
+
+      if (!mmsi) {
+        const detailEl = document.getElementById(detailId);
+        if (detailEl) detailEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">NO MMSI ON FEATURE</span>';
+        return;
+      }
+
+      const TRAIL_DAYS = [1, 7, 30, 183, 366] as const;
+      const TRAIL_LABELS = ['1 DAY', '1 WEEK', '1 MONTH', '6 MONTHS', 'ALL'] as const;
+      const trailLabelFor = (days: number) => {
+        const i = TRAIL_DAYS.indexOf(days as (typeof TRAIL_DAYS)[number]);
+        return i >= 0 ? TRAIL_LABELS[i]! : 'ALL';
+      };
+      const fillVesselDetail = (detailEl: HTMLElement | null, d: any) => {
+        if (!detailEl) return;
+        if (!d || d.error) {
+          detailEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">AIS DETAIL UNAVAILABLE</span>';
+          return;
+        }
+        const v = d.vessel || {};
+        const row = (label: string, val: unknown) =>
+          val == null || val === ''
+            ? ''
+            : `<div><span style="color:#5C5A54;">${label}</span><br/><span style="color:#E8E6E0;font-family:monospace;">${htmlEsc(String(val))}</span></div>`;
+        detailEl.innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:9px;">
+          ${row('CALLSIGN', v.callsign)}
+          ${row('IMO', v.imo)}
+          ${row('SHIP TYPE', v.shipType || v.type)}
+          ${row('STATUS', v.navStatusLabel)}
+          ${row('COG', v.cog != null ? `${Number(v.cog).toFixed(0)}°` : null)}
+          ${row('DRAUGHT', v.draught != null ? `${v.draught} m` : null)}
+          ${row('LENGTH', v.length != null ? `${v.length} m` : null)}
+          ${row('BEAM', v.beam != null ? `${v.beam} m` : null)}
+          ${row('ETA', v.eta)}
+          ${row('NEAR', v.near)}
+          ${row('SEEN', v.seen)}
+          ${row('SOURCE', v.source)}
+        </div>`;
+      };
+      const applyTrackPayload = (d: any, days: number, trackStatusEl: HTMLElement | null) => {
+        const track = Array.isArray(d?.track) ? (d.track as [number, number][]) : [];
+        if (track.length >= 2) {
+          setTrackSel((cur) =>
+            setShipTrackResult(cur, mmsi, {
+              ok: true,
+              coordinates: track,
+              label: d?.vessel?.name || shipLabel,
+              meta: {
+                points: track.length,
+                from: d?.trackMeta?.from ?? null,
+                to: d?.trackMeta?.to ?? null,
+                days,
+              },
+            }),
+          );
+          if (trackStatusEl) {
+            const fromRaw = d.trackMeta?.from ? String(d.trackMeta.from) : '';
+            const toRaw = d.trackMeta?.to ? String(d.trackMeta.to) : '';
+            const from = fromRaw ? htmlEsc(fromRaw.slice(0, 10)) : '';
+            const to = toRaw ? htmlEsc(toRaw.slice(0, 10)) : '';
+            const span = from && to ? ` · ${from} → ${to}` : from ? ` · SINCE ${from}` : '';
+            trackStatusEl.innerHTML =
+              `<span style="color:#80DEEA;font-size:9px;letter-spacing:0.1em;">AIS TRACK · ${trailLabelFor(days)} · ${track.length} PTS${span}</span>`;
+          }
+        } else {
+          setTrackSel((cur) => setShipTrackResult(cur, mmsi, { ok: false }));
+          if (trackStatusEl) trackStatusEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">NO AIS TRACK</span>';
+        }
+      };
+      const loadShipTrack = (days: number, opts: { fillDetail: boolean }) => {
+        const trackEl = document.getElementById(trackLoadingId);
+        const sliderWrap = document.getElementById(`${trackLoadingId}-slider`);
+        const labelEl = document.getElementById(`${trackLoadingId}-label`);
+        if (trackEl) trackEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;letter-spacing:0.1em;">LOADING AIS TRACK…</span>';
+        if (sliderWrap) sliderWrap.style.display = 'block';
+        if (labelEl) labelEl.textContent = trailLabelFor(days);
+        const rangeEl = document.getElementById(`${trackLoadingId}-range`) as HTMLInputElement | null;
+        if (rangeEl) {
+          const idx = TRAIL_DAYS.indexOf(days as (typeof TRAIL_DAYS)[number]);
+          rangeEl.value = String(idx >= 0 ? idx : 4);
+        }
+        const ac = new AbortController();
+        shipTrackAbortsRef.current.get(mmsi)?.abort();
+        shipTrackAbortsRef.current.set(mmsi, ac);
+        void fetch(`/api/maritime/vessel?mmsi=${encodeURIComponent(mmsi)}&days=${days}`, { signal: ac.signal })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((d) => {
+            if (ac.signal.aborted) return;
+            const detailEl = document.getElementById(detailId);
+            const trackStatusEl = document.getElementById(trackLoadingId);
+            if (!d || d.error) {
+              if (opts.fillDetail && detailEl) {
+                detailEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">AIS DETAIL UNAVAILABLE</span>';
+              }
+              if (trackStatusEl) trackStatusEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">NO AIS TRACK</span>';
+              setTrackSel((cur) => setShipTrackResult(cur, mmsi, { ok: false }));
+              return;
+            }
+            if (opts.fillDetail) fillVesselDetail(detailEl, d);
+            applyTrackPayload(d, days, trackStatusEl);
+          })
+          .catch((err) => {
+            if (err?.name === 'AbortError') return;
+            const detailEl = document.getElementById(detailId);
+            const trackStatusEl = document.getElementById(trackLoadingId);
+            if (opts.fillDetail && detailEl) {
+              detailEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">AIS DETAIL UNAVAILABLE</span>';
+            }
+            if (trackStatusEl) trackStatusEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">TRACK UNAVAILABLE</span>';
+            setTrackSel((cur) => setShipTrackResult(cur, mmsi, { ok: false }));
+          });
+      };
+      const bindTrailSlider = () => {
+        const rangeEl = document.getElementById(`${trackLoadingId}-range`) as HTMLInputElement | null;
+        if (!rangeEl || rangeEl.dataset.bound === '1') return;
+        rangeEl.dataset.bound = '1';
+        rangeEl.addEventListener('input', () => {
+          const idx = Number(rangeEl.value);
+          const days = TRAIL_DAYS[Math.max(0, Math.min(4, idx))] ?? 1;
+          const labelEl = document.getElementById(`${trackLoadingId}-label`);
+          if (labelEl) labelEl.textContent = trailLabelFor(days);
+          setTrackSel((cur) => setShipTrailDays(cur, mmsi, days));
+          loadShipTrack(days, { fillDetail: false });
+        });
+      };
+
+      setTrackSel((prev) => {
+        const next = toggleShipTrack(prev, { mmsi, label: shipLabel });
+        const nowOn = next.ships.some((s) => s.id === mmsi && s.status === 'loading');
+        const trackEl = document.getElementById(trackLoadingId);
+        if (nowOn) {
+          const days = next.ships.find((s) => s.id === mmsi)?.trailDays ?? 1;
+          loadShipTrack(days, { fillDetail: true });
+          queueMicrotask(bindTrailSlider);
+        } else {
+          shipTrackAbortsRef.current.get(mmsi)?.abort();
+          shipTrackAbortsRef.current.delete(mmsi);
+          if (trackEl) trackEl.innerHTML = '<span style="color:#5C5A54;font-size:9px;">TRACK CLEARED</span>';
+          const sliderWrap = document.getElementById(`${trackLoadingId}-slider`);
+          if (sliderWrap) sliderWrap.style.display = 'none';
+          // Still refresh AIS detail for the popup without adding a track.
+          void fetch(`/api/maritime/vessel?mmsi=${encodeURIComponent(mmsi)}&days=1`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => fillVesselDetail(document.getElementById(detailId), d))
+            .catch(() => fillVesselDetail(document.getElementById(detailId), null));
+        }
+        return next;
+      });
     });
 
     // ── Weather Events (NASA EONET + NOAA/NWS + GDACS) ──
@@ -1856,24 +3347,325 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     ids.forEach(id => { if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', visible ? 'visible' : 'none'); });
   }, []);
 
-  // Flight data → GeoJSON (GPU rendered)
+  // Track zoom for flight density: thin when zoomed out, full feed at z ≥ 7.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const sync = () => {
+      const next = map.getZoom() >= FLIGHTS_FULL_DENSITY_ZOOM;
+      setFlightsFullDensity((prev) => (prev === next ? prev : next));
+    };
+    sync();
+    map.on('zoomend', sync);
+    map.on('moveend', sync);
+    return () => {
+      map.off('zoomend', sync);
+      map.off('moveend', sync);
+    };
+  }, [mapReady]);
+
+  // Flight data → GeoJSON (GPU rendered; helis never dropped by decimation)
   useEffect(() => {
     if (!mapReady) return;
-    const toFeatures = (arr: any[], decimate: number = 1) => {
-      let filtered = arr || [];
-      if (decimate > 1) {
-        filtered = filtered.filter((_, i) => i % decimate === 0);
-      }
-      return filtered.map((f: any) => ({
-        type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [f.lng, f.lat] },
-        properties: { callsign: f.callsign, heading: f.heading || 0, alt: f.alt, model: f.model, speed_knots: f.speed_knots, registration: f.registration, icao24: f.icao24 },
+    const commercialDecimate = flightsFullDensity ? 1 : 10;
+    const lightDecimate = flightsFullDensity ? 1 : 2;
+    setGeo('flights', activeLayers.flights ? flightsToGeoJsonFeatures(data.commercial_flights, commercialDecimate) : []);
+    setGeo('private-fl', activeLayers.private ? flightsToGeoJsonFeatures(data.private_flights, lightDecimate) : []);
+    setGeo('jets', activeLayers.jets ? flightsToGeoJsonFeatures(data.private_jets, lightDecimate) : []);
+    setGeo('military', activeLayers.military ? flightsToGeoJsonFeatures(data.military_flights) : []);
+  }, [mapReady, flightsFullDensity, data.commercial_flights, data.private_flights, data.private_jets, data.military_flights, activeLayers.flights, activeLayers.private, activeLayers.jets, activeLayers.military, setGeo]);
+
+  /* Sync multi-ship tracks from selection store → selected-ship-track source. */
+  useEffect(() => {
+    if (!mapReady) return;
+    const src = mapRef.current?.getSource('selected-ship-track') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    const features = trackSel.ships
+      .filter((s) => s.status === 'ready' && s.coordinates && s.coordinates.length >= 2)
+      .map((s) => ({
+        type: 'Feature' as const,
+        properties: { mmsi: s.id, name: s.label, points: s.meta?.points ?? s.coordinates!.length },
+        geometry: { type: 'LineString' as const, coordinates: s.coordinates! },
       }));
+    src.setData({ type: 'FeatureCollection', features });
+  }, [mapReady, trackSel.ships]);
+
+  /* Shift+drag AIS box-select → Active tracks + group popup with shared trail slider. */
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const container = map.getContainer();
+    const overlay = document.createElement('div');
+    overlay.setAttribute('data-ais-box-select', '1');
+    overlay.style.cssText =
+      'position:absolute;pointer-events:none;display:none;border:1px dashed #E8C547;background:rgba(232,197,71,0.12);z-index:4;box-sizing:border-box;';
+    container.appendChild(overlay);
+
+    const htmlEsc = (s: unknown): string =>
+      String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const trailLabelFor = (days: number) => {
+      const i = AIS_TRAIL_DAYS.indexOf(days as (typeof AIS_TRAIL_DAYS)[number]);
+      return i >= 0 ? AIS_TRAIL_LABELS[i]! : 'ALL';
     };
-    setGeo('flights', activeLayers.flights ? toFeatures(data.commercial_flights, 10) : []);
-    setGeo('private-fl', activeLayers.private ? toFeatures(data.private_flights, 2) : []);
-    setGeo('jets', activeLayers.jets ? toFeatures(data.private_jets, 2) : []);
-    setGeo('military', activeLayers.military ? toFeatures(data.military_flights) : []);
-  }, [mapReady, data.commercial_flights, data.private_flights, data.private_jets, data.military_flights, activeLayers.flights, activeLayers.private, activeLayers.jets, activeLayers.military]);
+
+    const fetchShipTrail = (mmsi: string, days: number, labelHint?: string) => {
+      const ac = new AbortController();
+      shipTrackAbortsRef.current.get(mmsi)?.abort();
+      shipTrackAbortsRef.current.set(mmsi, ac);
+      void fetch(`/api/maritime/vessel?mmsi=${encodeURIComponent(mmsi)}&days=${days}`, { signal: ac.signal })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (ac.signal.aborted) return;
+          const track = Array.isArray(d?.track) ? (d.track as [number, number][]) : [];
+          if (track.length >= 2) {
+            setTrackSel((cur) =>
+              setShipTrackResult(cur, mmsi, {
+                ok: true,
+                coordinates: track,
+                label: d?.vessel?.name || labelHint,
+                meta: {
+                  points: track.length,
+                  from: d?.trackMeta?.from ?? null,
+                  to: d?.trackMeta?.to ?? null,
+                  days,
+                },
+              }),
+            );
+          } else {
+            setTrackSel((cur) => setShipTrackResult(cur, mmsi, { ok: false }));
+          }
+        })
+        .catch((err) => {
+          if (err?.name === 'AbortError') return;
+          setTrackSel((cur) => setShipTrackResult(cur, mmsi, { ok: false }));
+        });
+    };
+
+    const openGroupPopup = (
+      lngLat: [number, number],
+      picks: { mmsi: string; label: string }[],
+    ) => {
+      const mmsis = picks.map((p) => p.mmsi);
+      groupMmsisRef.current = mmsis;
+      const color = '#E8C547';
+      const uid = `ais-group-${Date.now()}`;
+      const preview = picks.slice(0, 5);
+      const more = picks.length - preview.length;
+      const listHtml = preview
+        .map(
+          (p) =>
+            `<div style="font-size:10px;color:#E8E6E0;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${htmlEsc(p.label)} <span style="color:#5C5A54;">${htmlEsc(p.mmsi)}</span></div>`,
+        )
+        .join('');
+      const moreHtml =
+        more > 0
+          ? `<div style="font-size:9px;color:#5C5A54;margin-top:2px;">+${more} more</div>`
+          : '';
+      const pStyle =
+        "background:rgba(12,14,26,0.95);backdrop-filter:blur(16px);border-radius:10px;padding:16px;font-family:'JetBrains Mono',monospace;";
+      const html = `<div style="${pStyle}border:1px solid ${color}60;min-width:220px;max-width:280px;">
+        <div style="color:${color};font-size:12px;font-weight:700;letter-spacing:0.1em;margin-bottom:8px;">${picks.length} VESSELS</div>
+        <div style="margin-bottom:10px;">${listHtml}${moreHtml}</div>
+        <div id="${uid}-slider">
+          <div style="display:flex;justify-content:space-between;font-size:8px;color:#5C5A54;letter-spacing:0.08em;margin-bottom:4px;">
+            <span>TRAIL</span><span id="${uid}-label">1 DAY</span>
+          </div>
+          <input id="${uid}-range" type="range" min="0" max="4" step="1" value="0"
+            style="width:100%;accent-color:${color};cursor:pointer;" />
+          <div style="display:flex;justify-content:space-between;font-size:7px;color:#5C5A54;margin-top:2px;">
+            <span>1d</span><span>1w</span><span>1m</span><span>6m</span><span>all</span>
+          </div>
+        </div>
+        <button id="${uid}-clear" type="button"
+          style="margin-top:10px;width:100%;padding:6px 10px;font-size:9px;letter-spacing:0.12em;cursor:pointer;border-radius:5px;font-family:'JetBrains Mono',monospace;color:#FF8A80;border:1px solid rgba(255,138,128,0.35);background:rgba(255,138,128,0.08);">
+          CLEAR GROUP
+        </button>
+      </div>`;
+
+      popupRef.current?.remove();
+      const pop = new maplibregl.Popup({
+        closeButton: true,
+        maxWidth: 'none',
+        offset: 14,
+        className: 'osiris-draggable-popup',
+      })
+        .setLngLat(lngLat)
+        .setHTML(html)
+        .addTo(map);
+      popupRef.current = pop;
+      pop.on('close', () => {
+        if (popupRef.current === pop) popupRef.current = null;
+        groupMmsisRef.current = [];
+      });
+
+      queueMicrotask(() => {
+        const rangeEl = document.getElementById(`${uid}-range`) as HTMLInputElement | null;
+        const clearEl = document.getElementById(`${uid}-clear`);
+        if (rangeEl && rangeEl.dataset.bound !== '1') {
+          rangeEl.dataset.bound = '1';
+          rangeEl.addEventListener('input', () => {
+            const idx = Number(rangeEl.value);
+            const days = AIS_TRAIL_DAYS[Math.max(0, Math.min(4, idx))] ?? 1;
+            const labelEl = document.getElementById(`${uid}-label`);
+            if (labelEl) labelEl.textContent = trailLabelFor(days);
+            const group = groupMmsisRef.current.slice();
+            setTrackSel((cur) => setShipTrailDaysForMany(cur, group, days));
+            for (const mmsi of group) fetchShipTrail(mmsi, days);
+          });
+        }
+        if (clearEl && clearEl.dataset.bound !== '1') {
+          clearEl.dataset.bound = '1';
+          clearEl.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const group = groupMmsisRef.current.slice();
+            for (const mmsi of group) {
+              shipTrackAbortsRef.current.get(mmsi)?.abort();
+              shipTrackAbortsRef.current.delete(mmsi);
+            }
+            setTrackSel((cur) => removeShipTracks(cur, group));
+            groupMmsisRef.current = [];
+            pop.remove();
+          });
+        }
+      });
+    };
+
+    let dragging = false;
+    let start: { x: number; y: number } | null = null;
+
+    const toMapPoint = (e: MouseEvent) => {
+      const r = container.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
+
+    const paintOverlay = (rect: ScreenRect) => {
+      const n = normalizeScreenRect(rect);
+      overlay.style.display = 'block';
+      overlay.style.left = `${n.left}px`;
+      overlay.style.top = `${n.top}px`;
+      overlay.style.width = `${n.right - n.left}px`;
+      overlay.style.height = `${n.bottom - n.top}px`;
+    };
+
+    const hideOverlay = () => {
+      overlay.style.display = 'none';
+      overlay.style.width = '0';
+      overlay.style.height = '0';
+    };
+
+    const finishDrag = (e: MouseEvent) => {
+      if (!dragging || !start) return;
+      dragging = false;
+      map.dragPan.enable();
+      const end = toMapPoint(e);
+      const rect: ScreenRect = { x1: start.x, y1: start.y, x2: end.x, y2: end.y };
+      start = null;
+      hideOverlay();
+      if (!isMeaningfulBox(rect)) return;
+
+      const n = normalizeScreenRect(rect);
+      const layerIds = ['ship-dots'].filter((id) => {
+        if (!map.getLayer(id)) return false;
+        try {
+          return map.getLayoutProperty(id, 'visibility') !== 'none';
+        } catch {
+          return true;
+        }
+      });
+      if (!layerIds.length) return;
+
+      const features = map.queryRenderedFeatures(
+        [
+          [n.left, n.top],
+          [n.right, n.bottom],
+        ],
+        { layers: layerIds },
+      );
+      const picks = capAisPicks(
+        features.map((f) => pickFromShipProps(f.properties as Record<string, unknown>)).filter(
+          (p): p is NonNullable<typeof p> => p != null,
+        ),
+      );
+      if (!picks.length) return;
+
+      setTrackSel((prev) => {
+        const beforeIds = new Set(prev.ships.map((s) => s.id));
+        const next = ensureShipTracks(prev, picks);
+        const toFetch = next.ships.filter(
+          (s) => !beforeIds.has(s.id) && picks.some((p) => p.mmsi === s.id),
+        );
+        queueMicrotask(() => {
+          for (const s of toFetch) {
+            fetchShipTrail(s.id, s.trailDays ?? 1, s.label);
+          }
+        });
+        return next;
+      });
+
+      const cx = (n.left + n.right) / 2;
+      const cy = (n.top + n.bottom) / 2;
+      const ll = map.unproject([cx, cy]);
+      openGroupPopup([ll.lng, ll.lat], picks);
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (!e.shiftKey || e.button !== 0) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('.maplibregl-popup, .osiris-draggable-popup, button, input, a')) return;
+      dragging = true;
+      start = toMapPoint(e);
+      map.dragPan.disable();
+      paintOverlay({ x1: start.x, y1: start.y, x2: start.x, y2: start.y });
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!dragging || !start) return;
+      const cur = toMapPoint(e);
+      paintOverlay({ x1: start.x, y1: start.y, x2: cur.x, y2: cur.y });
+    };
+
+    const onMouseUp = (e: MouseEvent) => finishDrag(e);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && groupMmsisRef.current.length) {
+        popupRef.current?.remove();
+        groupMmsisRef.current = [];
+      }
+    };
+
+    container.addEventListener('mousedown', onMouseDown, true);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      container.removeEventListener('mousedown', onMouseDown, true);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('keydown', onKeyDown);
+      overlay.remove();
+      map.dragPan.enable();
+      groupMmsisRef.current = [];
+    };
+  }, [mapReady]);
+
+  /* Maritime off → drop all ship track selections. */
+  useEffect(() => {
+    if (anyAisShipLayerOn(activeLayers as Record<string, boolean>)) return;
+    setTrackSel((s) => (s.ships.length ? { ...s, ships: [] } : s));
+    shipTrackAbortsRef.current.forEach((a) => a.abort());
+    shipTrackAbortsRef.current.clear();
+    groupMmsisRef.current = [];
+  }, [activeLayers]);
 
   /**
    * Pull the palette out of the document whenever it can have changed.
@@ -1927,11 +3719,44 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         map.updateImage(id, { width: size, height: size, data: new Uint8Array(ctx.getImageData(0, 0, size, size).data) });
       };
 
+      const updateHeliIcon = (id: string, color: string, size: number) => {
+        if (!map.hasImage(id)) return;
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d')!;
+        const cx = size / 2, cy = size / 2;
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = Math.max(1.5, size * 0.08);
+        ctx.beginPath();
+        ctx.moveTo(cx - size * 0.42, cy);
+        ctx.lineTo(cx + size * 0.42, cy);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - size * 0.08);
+        ctx.lineTo(cx, cy + size * 0.08);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + size * 0.06, size * 0.12, size * 0.22, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + size * 0.22);
+        ctx.lineTo(cx, cy + size * 0.4);
+        ctx.lineTo(cx + size * 0.14, cy + size * 0.38);
+        ctx.stroke();
+        map.updateImage(id, { width: size, height: size, data: new Uint8Array(ctx.getImageData(0, 0, size, size).data) });
+      };
+
       updateMapIcon('plane-cyan', palette.flightCivil, 24);
       updateMapIcon('plane-green', palette.flightPrivate, 24);
       updateMapIcon('plane-pink', palette.flightGov, 24);
       updateMapIcon('plane-red', palette.flightMilitary, 24);
       updateMapIcon('plane-grey', palette.flightUnknown, 24);
+      updateHeliIcon('heli-cyan', palette.flightCivil, 24);
+      updateHeliIcon('heli-green', palette.flightPrivate, 24);
+      updateHeliIcon('heli-pink', palette.flightGov, 24);
+      updateHeliIcon('heli-red', palette.flightMilitary, 24);
+      updateHeliIcon('heli-grey', palette.flightUnknown, 24);
     }, [mapReady, palette]);
 
   // OI's arcs take their three tones from the Style Studio (violet, magenta, indigo unless changed).
@@ -2214,15 +4039,194 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
 
   useEffect(() => {
     if (!mapReady) return;
-    setGeo('maritime', activeLayers.maritime && data.maritime_ports ? data.maritime_ports.map((p: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { name: p.name, country: p.country, type: p.type, volume: p.volume, fleet: p.fleet, rank: p.rank } })) : []);
-    setGeo('maritime-choke', activeLayers.maritime && data.maritime_chokepoints ? data.maritime_chokepoints.map((c: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [c.lng, c.lat] }, properties: { name: c.name, traffic: c.traffic, risk: c.risk } })) : []);
-    setGeo('maritime-ships', activeLayers.maritime && data.maritime_ships ? data.maritime_ships.map((s: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lng, s.lat] }, properties: { name: s.name || s.mmsi?.toString(), type: s.type || 'cargo', speed: s.speed, heading: s.heading, destination: s.destination, flag: s.flag } })) : []);
-  }, [mapReady, data.maritime_ports, data.maritime_chokepoints, data.maritime_ships, activeLayers.maritime, setGeo]);
+    const infra = maritimeInfraOn(activeLayers as Record<string, boolean>);
+    const shipsOn = anyAisShipLayerOn(activeLayers as Record<string, boolean>);
+    setGeo('maritime', infra && data.maritime_ports ? data.maritime_ports.map((p: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { name: p.name, country: p.country, type: p.type, volume: p.volume, fleet: p.fleet, rank: p.rank } })) : []);
+    setGeo('maritime-choke', infra && data.maritime_chokepoints ? data.maritime_chokepoints.map((c: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [c.lng, c.lat] }, properties: { name: c.name, traffic: c.traffic, risk: c.risk } })) : []);
+    const ships = shipsOn && data.maritime_ships
+      ? data.maritime_ships
+          .filter((s: any) => shipVisibleForLayers(s.type || 'cargo', activeLayers as Record<string, boolean>))
+          .map((s: any) => ({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [s.lng, s.lat] },
+            properties: {
+              mmsi: s.mmsi,
+              name: s.name || s.mmsi?.toString(),
+              type: s.type || 'cargo',
+              speed: s.speed,
+              heading: s.heading,
+              destination: s.destination,
+              flag: s.flag,
+            },
+          }))
+      : [];
+    setGeo('maritime-ships', ships);
+  }, [mapReady, data.maritime_ports, data.maritime_chokepoints, data.maritime_ships, activeLayers, setGeo]);
 
   useEffect(() => {
     if (!mapReady) return;
     setGeo('balloons', activeLayers.balloons && data.balloons ? data.balloons.map((b: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [b.lng, b.lat] }, properties: { callsign: b.callsign, type: b.type, status: b.status, altitude: b.altitude, speed: b.speed, verticalRate: b.verticalRate, temperature: b.temperature, color: b.color } })) : []);
   }, [mapReady, data.balloons, activeLayers.balloons, setGeo]);
+
+  /* Curiosities atlas — float32 [lng,lat,…] bin (~1.5MB), expanded once client-side. */
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const src = map.getSource('curiosities') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    const on = !!(activeLayers as { curiosities?: boolean }).curiosities;
+    if (!on) {
+      src.setData(EMPTY_FC as never);
+      return;
+    }
+    const notesSrc = map.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+    notesSrc?.setData(notesToGeoJSON(curiosityNotesRef.current) as never);
+
+    if (curiositiesFcRef.current) {
+      src.setData(curiositiesFcRef.current as never);
+      return;
+    }
+    if (curiositiesLoadRef.current === 'loading') return;
+    curiositiesLoadRef.current = 'loading';
+    fetch('/data/curiosities.bin')
+      .then((r) => {
+        if (!r.ok) throw new Error(`curiosities bin HTTP ${r.status}`);
+        return r.arrayBuffer();
+      })
+      .then((ab) => {
+        const view = new DataView(ab);
+        const count = Math.floor(ab.byteLength / 8);
+        const features: GeoJSON.Feature[] = new Array(count);
+        for (let i = 0; i < count; i++) {
+          const lng = view.getFloat32(i * 8, true);
+          const lat = view.getFloat32(i * 8 + 4, true);
+          features[i] = {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            properties: { i },
+          };
+        }
+        const fc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features };
+        curiositiesFcRef.current = fc;
+        curiositiesLoadRef.current = 'ready';
+        if (!(activeLayers as { curiosities?: boolean }).curiosities) return;
+        const live = mapRef.current?.getSource('curiosities') as maplibregl.GeoJSONSource | undefined;
+        live?.setData(fc as never);
+        const notesLive = mapRef.current?.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+        notesLive?.setData(notesToGeoJSON(curiosityNotesRef.current) as never);
+      })
+      .catch((err) => {
+        curiositiesLoadRef.current = 'idle';
+        console.warn('[OSIRIS] curiosities atlas failed', err);
+      });
+  }, [mapReady, (activeLayers as { curiosities?: boolean }).curiosities]);
+
+  /* GROUND layers — debounced viewport fetch; GTFS polls every 20s while on. */
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const aborters = new Map<string, AbortController>();
+    const layersOn = activeLayers as Record<string, boolean>;
+
+    const refreshKey = (key: GroundLayerKey) => {
+      const src = map.getSource(`ground-${key}`) as maplibregl.GeoJSONSource | undefined;
+      const on = !!layersOn[key];
+      if (!on) {
+        src?.setData(EMPTY_FC as never);
+        aborters.get(key)?.abort();
+        return;
+      }
+      const z = map.getZoom();
+      if (z < GROUND_MIN_ZOOM[key]) {
+        src?.setData(EMPTY_FC as never);
+        aborters.get(key)?.abort();
+        return;
+      }
+      aborters.get(key)?.abort();
+      const ac = new AbortController();
+      aborters.set(key, ac);
+      const bbox = boundsToBboxParam(map.getBounds());
+      const url = buildGroundLayerUrl(key, bbox, z);
+      fetch(url, { signal: ac.signal })
+        .then((r) => r.json())
+        .then((fc) => { if (!ac.signal.aborted) src?.setData(fc); })
+        .catch(() => { /* aborted or fail: keep last */ });
+    };
+
+    const refresh = () => {
+      for (const key of GROUND_LAYER_KEYS) refreshKey(key);
+    };
+
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const onMove = () => {
+      clearTimeout(t);
+      t = setTimeout(refresh, GROUND_DEBOUNCE_MS);
+    };
+    map.on('moveend', onMove);
+    refresh();
+
+    const pollTimer = setInterval(() => {
+      if (document.hidden) return;
+      if (layersOn.gtfs) refreshKey('gtfs');
+      if (layersOn.trains) refreshKey('trains');
+      if (layersOn.transit_alerts) refreshKey('transit_alerts');
+      if (layersOn.gbfs) refreshKey('gbfs');
+      if (layersOn.lightning) refreshKey('lightning');
+      if (layersOn.aprs) refreshKey('aprs');
+      if (layersOn.road_incidents) refreshKey('road_incidents');
+    }, 20_000);
+
+    const onVis = () => {
+      if (document.hidden) return;
+      if (layersOn.gtfs) refreshKey('gtfs');
+      if (layersOn.trains) refreshKey('trains');
+      if (layersOn.transit_alerts) refreshKey('transit_alerts');
+      if (layersOn.gbfs) refreshKey('gbfs');
+      if (layersOn.lightning) refreshKey('lightning');
+      if (layersOn.aprs) refreshKey('aprs');
+      if (layersOn.road_incidents) refreshKey('road_incidents');
+    };
+    document.addEventListener('visibilitychange', onVis);
+
+    return () => {
+      map.off('moveend', onMove);
+      clearTimeout(t);
+      clearInterval(pollTimer);
+      document.removeEventListener('visibilitychange', onVis);
+      aborters.forEach((a) => a.abort());
+    };
+  }, [
+    mapReady,
+    activeLayers.uap,
+    activeLayers.abandoned,
+    activeLayers.trails,
+    activeLayers.public_access,
+    activeLayers.nightlife,
+    activeLayers.gtfs,
+    activeLayers.trains,
+    activeLayers.freight_rail,
+    activeLayers.transit_alerts,
+    activeLayers.gbfs,
+    activeLayers.gauges,
+    activeLayers.buoys,
+    activeLayers.lightning,
+    activeLayers.storms,
+    activeLayers.aprs,
+    activeLayers.road_incidents,
+    activeLayers.civic_311,
+    activeLayers.vacant,
+    activeLayers.historic_maps,
+  ]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    if (activeLayers.gtfs || activeLayers.trains) return;
+    setGeo('transit-route', []);
+    setGeo('transit-route-stops', []);
+    transitRouteAbortRef.current?.abort();
+    transitRouteAbortRef.current = null;
+    setTrackSel((s) => (s.transit ? setTransitTrack(s, null) : s));
+  }, [mapReady, activeLayers.gtfs, activeLayers.trains, setGeo]);
 
   useEffect(() => {
     if (!mapReady) return;
@@ -2433,15 +4437,28 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     setVis(['fires-heat'], activeLayers.fires);
     setVis(['weather-glow','weather-dots','weather-label'], activeLayers.weather);
     setVis(['infra-glow','infra-dots','infra-label'], activeLayers.infrastructure);
-    setVis(['maritime-glow','maritime-dots','maritime-label'], activeLayers.maritime);
-    setVis(['choke-glow','choke-dots','choke-label'], activeLayers.maritime);
-    setVis(['ship-dots','ship-label'], activeLayers.maritime);
+    const infraOn = maritimeInfraOn(activeLayers as Record<string, boolean>);
+    const shipsLayerOn = anyAisShipLayerOn(activeLayers as Record<string, boolean>);
+    setVis(['maritime-glow','maritime-dots','maritime-label'], infraOn);
+    setVis(['choke-glow','choke-dots','choke-label'], infraOn);
+    setVis(['ship-dots','ship-label'], shipsLayerOn);
     setVis(['news-glow','news-dots','news-label'], activeLayers.live_news);
     setVis(['alert-pin-glow','alert-pin-dots','alert-pin-label','alert-pin-pulse','alert-pin-selected'], activeLayers.alert_pins);
     setVis(['conflict-icons'], activeLayers.conflict_zones !== false);
 
     setVis(['balloon-dots','balloon-label'], activeLayers.balloons);
     setVis(['rad-glow','rad-dots','rad-label'], activeLayers.radiation);
+    setVis(
+      [
+        'curiosities-clusters',
+        'curiosities-cluster-count',
+        'curiosities-dots',
+        'curiosities-notes-glow',
+        'curiosities-notes-dots',
+        'curiosities-notes-label',
+      ],
+      !!(activeLayers as { curiosities?: boolean }).curiosities,
+    );
     setVis(['sdk-sea','sdk-sea-glow','sdk-sea-atmo'], activeLayers.sdk_sea !== false);
     setVis(['sdk-air','sdk-air-glow','sdk-air-atmo'], activeLayers.sdk_air !== false);
     setVis(['sdk-intel','sdk-intel-glow','sdk-intel-atmo'], activeLayers.sdk_naval !== false);
@@ -2691,6 +4708,722 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     }
   }, [mapReady, mapStyle]);
 
+  // Admin borders — country / US state / Canadian province lines over satellite imagery.
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const SRC = 'admin-borders';
+    const HALO = 'admin-borders-halo';
+    const LINE = 'admin-borders-line';
+    const before = map.getLayer('day-night-fill') ? 'day-night-fill' : undefined;
+
+    const hide = () => {
+      if (map.getLayer(HALO)) map.setLayoutProperty(HALO, 'visibility', 'none');
+      if (map.getLayer(LINE)) map.setLayoutProperty(LINE, 'visibility', 'none');
+    };
+
+    if (!(activeLayers as { admin_borders?: boolean }).admin_borders) {
+      hide();
+      return;
+    }
+
+    let cancelled = false;
+
+    const ensureLayers = () => {
+      if (!map.getSource(SRC)) {
+        map.addSource(SRC, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      }
+      if (!map.getLayer(HALO)) {
+        map.addLayer(
+          {
+            id: HALO,
+            type: 'line',
+            source: SRC,
+            layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'visible' },
+            paint: {
+              'line-color': '#0a1620',
+              'line-width': ['interpolate', ['linear'], ['zoom'], 2, 1.8, 6, 2.4, 10, 3.2],
+              'line-opacity': 0.45,
+              'line-blur': 0.6,
+            },
+          },
+          before,
+        );
+      }
+      if (!map.getLayer(LINE)) {
+        map.addLayer(
+          {
+            id: LINE,
+            type: 'line',
+            source: SRC,
+            layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'visible' },
+            paint: {
+              'line-color': '#E8F4FF',
+              'line-width': ['interpolate', ['linear'], ['zoom'], 2, 0.6, 6, 1, 10, 1.4],
+              'line-opacity': 0.72,
+            },
+          },
+          before,
+        );
+      }
+      if (map.getLayer(HALO)) map.setLayoutProperty(HALO, 'visibility', 'visible');
+      if (map.getLayer(LINE)) map.setLayoutProperty(LINE, 'visibility', 'visible');
+      if (map.getLayer('satellite-layer') && map.getLayer(HALO)) {
+        try {
+          map.moveLayer(HALO, before);
+          map.moveLayer(LINE, before);
+        } catch {
+          /* layer order best-effort */
+        }
+      }
+    };
+
+    ensureLayers();
+    void loadAdminBordersGeoJson()
+      .then(fc => {
+        if (cancelled) return;
+        const src = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+        src?.setData(fc as never);
+        ensureLayers();
+      })
+      .catch(e => console.warn('[OSIRIS] admin borders load failed:', e));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mapReady, (activeLayers as { admin_borders?: boolean }).admin_borders, mapStyle]);
+
+  // Live Traffic — TomTom raster flow tiles (proxied; key never leaves the server).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const SRC = 'tomtom-flow-tiles';
+    const LAYER = 'tomtom-flow-layer';
+    try {
+      if (!activeLayers.live_traffic) {
+        if (map.getLayer(LAYER)) map.setLayoutProperty(LAYER, 'visibility', 'none');
+        return;
+      }
+      if (!map.getSource(SRC)) {
+        map.addSource(SRC, {
+          type: 'raster',
+          tiles: ['/api/tiles/tomtom-flow/{z}/{x}/{y}'],
+          tileSize: 256,
+          minzoom: 7,
+          maxzoom: 18,
+          attribution: 'Traffic © <a href="https://www.tomtom.com">TomTom</a>',
+        });
+      }
+      if (!map.getLayer(LAYER)) {
+        // Above basemap / satellite, under day-night shade and markers.
+        const before = map.getLayer('day-night-fill') ? 'day-night-fill' : undefined;
+        map.addLayer(
+          {
+            id: LAYER,
+            type: 'raster',
+            source: SRC,
+            paint: { 'raster-opacity': 0.85 },
+          },
+          before,
+        );
+      } else {
+        map.setLayoutProperty(LAYER, 'visibility', 'visible');
+      }
+    } catch (e) {
+      console.warn('[OSIRIS] live traffic toggle error:', e);
+    }
+  }, [mapReady, activeLayers.live_traffic, mapStyle]);
+
+  // Night Lights — NASA GIBS VIIRS Black Marble (proxied; no key).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const SRC = 'gibs-night-lights';
+    const LAYER = 'gibs-night-lights-layer';
+    try {
+      if (!activeLayers.night_lights) {
+        if (map.getLayer(LAYER)) map.setLayoutProperty(LAYER, 'visibility', 'none');
+        return;
+      }
+      if (!map.getSource(SRC)) {
+        map.addSource(SRC, {
+          type: 'raster',
+          tiles: ['/api/tiles/gibs/night-lights/{z}/{x}/{y}?product=composite'],
+          tileSize: 256,
+          maxzoom: 8,
+          attribution:
+            'Night lights © <a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a> / ESDIS (VIIRS Black Marble)',
+        });
+      }
+      if (!map.getLayer(LAYER)) {
+        const before = map.getLayer('day-night-fill') ? 'day-night-fill' : undefined;
+        map.addLayer(
+          {
+            id: LAYER,
+            type: 'raster',
+            source: SRC,
+            paint: { 'raster-opacity': 0.85 },
+          },
+          before,
+        );
+      } else {
+        map.setLayoutProperty(LAYER, 'visibility', 'visible');
+      }
+    } catch (e) {
+      console.warn('[OSIRIS] night lights toggle error:', e);
+    }
+  }, [mapReady, activeLayers.night_lights, mapStyle]);
+
+  // GPS Jam — gpsjam.org H3 medium/high hexes (proxied GeoJSON).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const SRC = 'gps-jam';
+    const FILL = 'gps-jam-fill';
+    const LINE = 'gps-jam-outline';
+    const on = !!activeLayers.gps_jam;
+
+    const ensureLayers = () => {
+      if (!map.getSource(SRC)) {
+        map.addSource(SRC, {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+          attribution: GPSJAM_ATTRIBUTION,
+        });
+      }
+      const before = map.getLayer('day-night-fill') ? 'day-night-fill' : undefined;
+      if (!map.getLayer(FILL)) {
+        map.addLayer(
+          {
+            id: FILL,
+            type: 'fill',
+            source: SRC,
+            paint: {
+              'fill-color': [
+                'match',
+                ['get', 'level'],
+                'high',
+                '#e02020',
+                'medium',
+                '#e6c200',
+                '#e6c200',
+              ],
+              'fill-opacity': [
+                'match',
+                ['get', 'level'],
+                'high',
+                0.45,
+                'medium',
+                0.35,
+                0.35,
+              ],
+            },
+          },
+          before,
+        );
+      }
+      if (!map.getLayer(LINE)) {
+        map.addLayer(
+          {
+            id: LINE,
+            type: 'line',
+            source: SRC,
+            paint: {
+              'line-color': [
+                'match',
+                ['get', 'level'],
+                'high',
+                '#ff6666',
+                'medium',
+                '#ffe066',
+                '#ffe066',
+              ],
+              'line-width': 0.6,
+              'line-opacity': 0.7,
+            },
+          },
+          before,
+        );
+      }
+    };
+
+    try {
+      if (!on) {
+        gpsJamAbortRef.current?.abort();
+        if (map.getLayer(FILL)) map.setLayoutProperty(FILL, 'visibility', 'none');
+        if (map.getLayer(LINE)) map.setLayoutProperty(LINE, 'visibility', 'none');
+        const src = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+        src?.setData({ type: 'FeatureCollection', features: [] });
+        return;
+      }
+
+      ensureLayers();
+      map.setLayoutProperty(FILL, 'visibility', 'visible');
+      map.setLayoutProperty(LINE, 'visibility', 'visible');
+
+      let cancelled = false;
+      (async () => {
+        setGpsJamLoading(true);
+        try {
+          if (!gpsJamDates.length) {
+            const mRes = await fetch('/api/layers/gps-jam?manifest=1');
+            if (mRes.ok) {
+              const m = (await mRes.json()) as { dates?: string[]; latest?: string | null };
+              if (!cancelled && Array.isArray(m.dates)) {
+                setGpsJamDates(m.dates);
+                if (!gpsJamDate && m.latest) setGpsJamDate(m.latest);
+              }
+            }
+          }
+          const date =
+            gpsJamDate ||
+            gpsJamDates[gpsJamDates.length - 1] ||
+            '';
+          gpsJamAbortRef.current?.abort();
+          const ac = new AbortController();
+          gpsJamAbortRef.current = ac;
+          const q = date ? `?date=${encodeURIComponent(date)}` : '';
+          const res = await fetch(`/api/layers/gps-jam${q}`, { signal: ac.signal });
+          if (!res.ok) return;
+          const headerDate = res.headers.get('X-Gpsjam-Date');
+          if (headerDate && !cancelled && !gpsJamDate) setGpsJamDate(headerDate);
+          const fc = await res.json();
+          if (cancelled || ac.signal.aborted) return;
+          const src = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+          src?.setData(fc);
+        } catch (e) {
+          if ((e as { name?: string })?.name === 'AbortError') return;
+          console.warn('[OSIRIS] gps jam fetch:', e);
+        } finally {
+          if (!cancelled) setGpsJamLoading(false);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        gpsJamAbortRef.current?.abort();
+      };
+    } catch (e) {
+      console.warn('[OSIRIS] gps jam toggle error:', e);
+    }
+  }, [mapReady, activeLayers.gps_jam, gpsJamDate, gpsJamDates, mapStyle]);
+
+  // GPS Jam hex click → popup
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !activeLayers.gps_jam) return;
+    const map = mapRef.current;
+    const FILL = 'gps-jam-fill';
+    const onClick = (e: maplibregl.MapLayerMouseEvent) => {
+      const f = e.features?.[0];
+      if (!f?.properties) return;
+      const p = f.properties as Record<string, unknown>;
+      const html =
+        `<div style="background:rgba(12,14,26,0.95);backdrop-filter:blur(16px);border-radius:10px;padding:14px;font-family:'JetBrains Mono',monospace;min-width:180px">` +
+        `<div style="font-size:10px;letter-spacing:0.18em;color:rgba(255,255,255,0.4);margin-bottom:6px">GPS JAM</div>` +
+        `<div style="font-size:13px;color:var(--gold-light,#e8c87a);margin-bottom:8px">${String(p.level || '').toUpperCase()} · ${String(p.pct ?? '—')}%</div>` +
+        `<div style="font-size:10px;color:rgba(255,255,255,0.55);line-height:1.6">` +
+        `DATE ${String(p.date || '—')}<br/>GOOD ${String(p.good ?? '—')} · BAD ${String(p.bad ?? '—')}<br/>H3 ${String(p.h3 || '—')}` +
+        `</div></div>`;
+      popupRef.current?.remove();
+      const pop = new maplibregl.Popup({ closeButton: true, maxWidth: '280px', offset: 12 })
+        .setLngLat(e.lngLat)
+        .setHTML(html)
+        .addTo(map);
+      popupRef.current = pop;
+    };
+    const onEnter = () => {
+      map.getCanvas().style.cursor = 'pointer';
+    };
+    const onLeave = () => {
+      map.getCanvas().style.cursor = '';
+    };
+    if (map.getLayer(FILL)) {
+      map.on('click', FILL, onClick);
+      map.on('mouseenter', FILL, onEnter);
+      map.on('mouseleave', FILL, onLeave);
+    }
+    return () => {
+      if (map.getLayer(FILL)) {
+        map.off('click', FILL, onClick);
+        map.off('mouseenter', FILL, onEnter);
+        map.off('mouseleave', FILL, onLeave);
+      }
+    };
+  }, [mapReady, activeLayers.gps_jam, mapStyle]);
+
+  // Paleo / Sea Level — DEM flood (meters) or Heine paleocoast (Ma).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const on = !!activeLayers.paleo_sl;
+    const SRC = 'paleo-coast';
+    const LINE = 'paleo-coast-line';
+    const FILL = 'paleo-coast-fill';
+
+    if (!on) {
+      paleoFloodRef.current?.setEnabled(false);
+      paleoCoastAbortRef.current?.abort();
+      if (map.getLayer(LINE)) map.setLayoutProperty(LINE, 'visibility', 'none');
+      if (map.getLayer(FILL)) map.setLayoutProperty(FILL, 'visibility', 'none');
+      const src = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+      src?.setData({ type: 'FeatureCollection', features: [] });
+      return;
+    }
+
+    if (paleoMode === 'meters') {
+      paleoCoastAbortRef.current?.abort();
+      if (map.getLayer(LINE)) map.setLayoutProperty(LINE, 'visibility', 'none');
+      if (map.getLayer(FILL)) map.setLayoutProperty(FILL, 'visibility', 'none');
+      if (!paleoFloodRef.current) {
+        paleoFloodRef.current = createPaleoFloodOverlay(map);
+      }
+      paleoFloodRef.current.setLevel(paleoMeters);
+      paleoFloodRef.current.setEnabled(true);
+      return () => {
+        /* keep overlay instance; disable when layer off */
+      };
+    }
+
+    // Ma mode
+    paleoFloodRef.current?.setEnabled(false);
+    let cancelled = false;
+    (async () => {
+      setPaleoLoading(true);
+      try {
+        if (!paleoAges.length) {
+          const cRes = await fetch('/api/layers/paleo-coast?catalog=1');
+          if (cRes.ok) {
+            const c = (await cRes.json()) as { ages?: number[]; latest?: number | null };
+            if (!cancelled && Array.isArray(c.ages) && c.ages.length) {
+              setPaleoAges(c.ages);
+              if (!c.ages.includes(paleoAgeMa) && c.latest != null) setPaleoAgeMa(c.latest);
+            }
+          }
+        }
+        if (!map.getSource(SRC)) {
+          map.addSource(SRC, {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] },
+            attribution: paleoCoastAttribution(),
+          });
+        }
+        const before = map.getLayer('day-night-fill') ? 'day-night-fill' : undefined;
+        if (!map.getLayer(FILL)) {
+          map.addLayer(
+            {
+              id: FILL,
+              type: 'fill',
+              source: SRC,
+              paint: { 'fill-color': '#c4a574', 'fill-opacity': 0.22 },
+              filter: ['in', ['geometry-type'], ['literal', ['Polygon', 'MultiPolygon']]],
+            },
+            before,
+          );
+        }
+        if (!map.getLayer(LINE)) {
+          map.addLayer(
+            {
+              id: LINE,
+              type: 'line',
+              source: SRC,
+              paint: { 'line-color': '#e8c87a', 'line-width': 1.2, 'line-opacity': 0.85 },
+            },
+            before,
+          );
+        }
+        map.setLayoutProperty(FILL, 'visibility', 'visible');
+        map.setLayoutProperty(LINE, 'visibility', 'visible');
+
+        paleoCoastAbortRef.current?.abort();
+        const ac = new AbortController();
+        paleoCoastAbortRef.current = ac;
+        const res = await fetch(
+          `/api/layers/paleo-coast?age=${encodeURIComponent(String(paleoAgeMa))}`,
+          { signal: ac.signal },
+        );
+        if (!res.ok) return;
+        const headerAge = res.headers.get('X-Paleo-Age-Ma');
+        if (headerAge && !cancelled) {
+          const n = Number(headerAge);
+          if (Number.isFinite(n) && n !== paleoAgeMa) setPaleoAgeMa(n);
+        }
+        const fc = await res.json();
+        if (cancelled || ac.signal.aborted) return;
+        const src = map.getSource(SRC) as maplibregl.GeoJSONSource | undefined;
+        src?.setData(fc);
+      } catch (e) {
+        if ((e as { name?: string })?.name === 'AbortError') return;
+        console.warn('[OSIRIS] paleo coast:', e);
+      } finally {
+        if (!cancelled) setPaleoLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      paleoCoastAbortRef.current?.abort();
+    };
+  }, [mapReady, activeLayers.paleo_sl, paleoMode, paleoMeters, paleoAgeMa, paleoAges, mapStyle]);
+
+  // Leylines — Watkins alignments + Gravity Wells grid (proxied from maps.leylines.net).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const SRC_W = 'leylines-watkins';
+    const SRC_G = 'leylines-grid';
+    const LAY_W = 'leylines-watkins-line';
+    const LAY_G = 'leylines-grid-line';
+    const on = !!activeLayers.leylines;
+
+    const ensureLayers = () => {
+      if (!map.getSource(SRC_W)) {
+        map.addSource(SRC_W, {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+          attribution: LEYLINES_WATKINS_ATTRIBUTION,
+        });
+      }
+      if (!map.getSource(SRC_G)) {
+        map.addSource(SRC_G, {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+          attribution: LEYLINES_ATTRIBUTION,
+        });
+      }
+      const before = map.getLayer('day-night-fill') ? 'day-night-fill' : undefined;
+      if (!map.getLayer(LAY_W)) {
+        map.addLayer(
+          {
+            id: LAY_W,
+            type: 'line',
+            source: SRC_W,
+            paint: {
+              'line-color': '#E8C547',
+              'line-width': 2,
+              'line-opacity': 0.85,
+            },
+          },
+          before,
+        );
+      }
+      if (!map.getLayer(LAY_G)) {
+        map.addLayer(
+          {
+            id: LAY_G,
+            type: 'line',
+            source: SRC_G,
+            paint: {
+              'line-color': '#5C9EAD',
+              'line-width': 1,
+              'line-opacity': 0.45,
+            },
+          },
+          before,
+        );
+      }
+    };
+
+    try {
+      if (!on) {
+        leylinesAbortRef.current?.abort();
+        if (map.getLayer(LAY_W)) map.setLayoutProperty(LAY_W, 'visibility', 'none');
+        if (map.getLayer(LAY_G)) map.setLayoutProperty(LAY_G, 'visibility', 'none');
+        (map.getSource(SRC_W) as maplibregl.GeoJSONSource | undefined)?.setData({
+          type: 'FeatureCollection',
+          features: [],
+        });
+        (map.getSource(SRC_G) as maplibregl.GeoJSONSource | undefined)?.setData({
+          type: 'FeatureCollection',
+          features: [],
+        });
+        return;
+      }
+
+      ensureLayers();
+      const wantW = showWatkins(leylinesMode);
+      const wantG = showGrid(leylinesMode);
+      map.setLayoutProperty(LAY_W, 'visibility', wantW ? 'visible' : 'none');
+      map.setLayoutProperty(LAY_G, 'visibility', wantG ? 'visible' : 'none');
+
+      let cancelled = false;
+      const ac = new AbortController();
+      leylinesAbortRef.current?.abort();
+      leylinesAbortRef.current = ac;
+
+      (async () => {
+        setLeylinesLoading(true);
+        try {
+          const jobs: Promise<void>[] = [];
+          if (wantW) {
+            jobs.push(
+              fetch('/api/layers/leylines/watkins', { signal: ac.signal })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((fc) => {
+                  if (cancelled || !fc) return;
+                  (map.getSource(SRC_W) as maplibregl.GeoJSONSource | undefined)?.setData(fc);
+                }),
+            );
+          }
+          if (wantG) {
+            jobs.push(
+              fetch('/api/layers/leylines/grid?family=gravity-wells', { signal: ac.signal })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((fc) => {
+                  if (cancelled || !fc) return;
+                  (map.getSource(SRC_G) as maplibregl.GeoJSONSource | undefined)?.setData(fc);
+                }),
+            );
+          }
+          await Promise.all(jobs);
+        } catch (err) {
+          if ((err as { name?: string })?.name === 'AbortError') return;
+          console.warn('[leylines]', err);
+        } finally {
+          if (!cancelled) setLeylinesLoading(false);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+        ac.abort();
+      };
+    } catch (err) {
+      console.warn('[leylines]', err);
+    }
+  }, [mapReady, activeLayers.leylines, leylinesMode, mapStyle]);
+
+  useEffect(() => {
+    return () => {
+      paleoFloodRef.current?.destroy();
+      paleoFloodRef.current = null;
+    };
+  }, []);
+
+  // Mapillary Street View coverage (vector tiles proxied; token stays server-side).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const SRC = 'mapillary-coverage';
+    const layers = ['mapillary-overview', 'mapillary-sequence', 'mapillary-image'] as const;
+    const on = !!(activeLayers as { street_view?: boolean }).street_view;
+    try {
+      if (!on) {
+        for (const id of layers) {
+          if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', 'none');
+        }
+        return;
+      }
+      if (!map.getSource(SRC)) {
+        map.addSource(SRC, {
+          type: 'vector',
+          tiles: ['/api/mapillary/tiles/{z}/{x}/{y}'],
+          minzoom: 0,
+          maxzoom: 14,
+          attribution: '© <a href="https://www.mapillary.com/">Mapillary</a>',
+        });
+      }
+      const before = map.getLayer('day-night-fill') ? 'day-night-fill' : undefined;
+      if (!map.getLayer('mapillary-overview')) {
+        map.addLayer(
+          {
+            id: 'mapillary-overview',
+            type: 'circle',
+            source: SRC,
+            'source-layer': 'overview',
+            minzoom: 0,
+            maxzoom: 6,
+            paint: {
+              'circle-radius': 3,
+              'circle-color': '#80CBC4',
+              'circle-opacity': 0.55,
+            },
+          },
+          before,
+        );
+      } else {
+        map.setLayoutProperty('mapillary-overview', 'visibility', 'visible');
+      }
+      if (!map.getLayer('mapillary-sequence')) {
+        map.addLayer(
+          {
+            id: 'mapillary-sequence',
+            type: 'line',
+            source: SRC,
+            'source-layer': 'sequence',
+            minzoom: 6,
+            maxzoom: 14,
+            paint: {
+              'line-color': '#4DB6AC',
+              'line-width': 1.5,
+              'line-opacity': 0.65,
+            },
+          },
+          before,
+        );
+      } else {
+        map.setLayoutProperty('mapillary-sequence', 'visibility', 'visible');
+      }
+      if (!map.getLayer('mapillary-image')) {
+        map.addLayer(
+          {
+            id: 'mapillary-image',
+            type: 'circle',
+            source: SRC,
+            'source-layer': 'image',
+            minzoom: 14,
+            paint: {
+              'circle-radius': 3.5,
+              'circle-color': '#26A69A',
+              'circle-opacity': 0.85,
+              'circle-stroke-width': 0.6,
+              'circle-stroke-color': 'rgba(255,255,255,0.35)',
+            },
+          },
+          before,
+        );
+      } else {
+        map.setLayoutProperty('mapillary-image', 'visibility', 'visible');
+      }
+    } catch (e) {
+      console.warn('[OSIRIS] mapillary coverage toggle error:', e);
+    }
+  }, [mapReady, (activeLayers as { street_view?: boolean }).street_view, mapStyle]);
+
+  // Street-view look-at pin (+ optional ray from Mapillary image → look-at).
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const src = mapRef.current.getSource('street-view-pin') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    if (!streetViewPin?.lookAt) {
+      src.setData(EMPTY_FC as never);
+      return;
+    }
+    const features: GeoJSON.Feature[] = [
+      {
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [streetViewPin.lookAt.lng, streetViewPin.lookAt.lat],
+        },
+        properties: { kind: 'lookAt' },
+      },
+    ];
+    if (streetViewPin.image) {
+      features.push({
+        type: 'Feature',
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [streetViewPin.image.lng, streetViewPin.image.lat],
+            [streetViewPin.lookAt.lng, streetViewPin.lookAt.lat],
+          ],
+        },
+        properties: { kind: 'ray' },
+      });
+    }
+    src.setData({ type: 'FeatureCollection', features } as never);
+  }, [mapReady, streetViewPin]);
+
   // Live Clouds — NOAA's satellite mosaic, hung at cloud altitude over the
   // ground; see lib/live-clouds-layer. Under the night shade and every marker.
   // On the map they also sit under the place names, as on any weather map, so
@@ -2724,22 +5457,32 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     return () => clearInterval(refresh);
   }, [mapReady, activeLayers.live_clouds, mapStyle]);
 
-  // Rain — RainViewer's radar mosaic, keyless, its last two hours as a loop.
-  // RainBar (rendered below) adds the frames and holds their time slider.
-
-  // Wind — NOAA GFS surface wind as moving trails, through time. WindBar draws
-  // it and holds the time slider; this only credits the source while it's on.
+  // Animated surface wind (nullschool-style particles over Open-Meteo UV).
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     const map = mapRef.current;
-    if (!activeLayers.wind) {
-      if (map.getLayer('wind-credit')) map.removeLayer('wind-credit');
-      if (map.getSource('wind-credit')) map.removeSource('wind-credit');
+    const on = !!(activeLayers as { wind?: boolean }).wind;
+    if (!on) {
+      windOverlayRef.current?.destroy();
+      windOverlayRef.current = null;
       return;
     }
-    if (!map.getSource('wind-credit')) map.addSource('wind-credit', { type: 'geojson', data: EMPTY_FC, attribution: WIND_ATTRIBUTION });
-    if (!map.getLayer('wind-credit')) map.addLayer({ id: 'wind-credit', type: 'circle', source: 'wind-credit' });
-  }, [mapReady, activeLayers.wind, mapStyle]);
+    let cancelled = false;
+    const overlay = createWindOverlay(map);
+    windOverlayRef.current = overlay;
+    fetchWindGrid('surface')
+      .then((grid) => {
+        if (cancelled) return;
+        overlay.setGrid(grid);
+        overlay.start();
+      })
+      .catch((e) => console.warn('[OSIRIS] wind field load failed:', e));
+    return () => {
+      cancelled = true;
+      overlay.destroy();
+      if (windOverlayRef.current === overlay) windOverlayRef.current = null;
+    };
+  }, [mapReady, (activeLayers as { wind?: boolean }).wind]);
 
   // OSIRIS OI — a prediction drawn as it happens: actors, the events of the
   // simulated worlds and arcs through the sky (see lib/oi/globe). The page feeds it
@@ -3080,6 +5823,152 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     });
   }, [mapReady, followUser, userLocation, navigating]);
 
+  // Explicit “save current view as ISS defaults” from SpaceCam.
+  const lastIssSaveReq = useRef(0);
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    if (!issSaveViewRequest || issSaveViewRequest === lastIssSaveReq.current) return;
+    lastIssSaveReq.current = issSaveViewRequest;
+    const map = mapRef.current;
+    const lagMs = clampIssStreamLagMs(issStreamLagMs ?? ISS_FOLLOW_STREAM_LAG_MS);
+    const saved = writeIssFollowViewPrefs({
+      pitch: map.getPitch(),
+      zoom: map.getZoom(),
+      lagMs,
+      feedId: issCamFeedId ?? undefined,
+    });
+    onIssViewSaved?.(saved);
+  }, [mapReady, issSaveViewRequest, issStreamLagMs, issCamFeedId, onIssViewSaved]);
+
+  // SpaceCam MAP SYNC — propagate ISS every frame.
+  // Framing follows the active feed (Sen nadir vs horizon). After lock:
+  // setCenter (+ bearing when track-up). Pitch and zoom stay operator-owned
+  // after the first lock — re-applying setPitch every frame was resetting tilt.
+  const hadIssFollow = useRef(false);
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    if (!issFollowTle?.line1 || !issFollowTle?.line2) {
+      if (hadIssFollow.current) {
+        hadIssFollow.current = false;
+        map.easeTo({ pitch: 20, bearing: 0, duration: 700 });
+      }
+      return;
+    }
+    hadIssFollow.current = true;
+    const { line1, line2 } = issFollowTle;
+    const profile = issFollowProfile(issCamFeedId);
+    const lagMs = clampIssStreamLagMs(issStreamLagMs ?? ISS_FOLLOW_STREAM_LAG_MS);
+    let raf = 0;
+    let locked = false;
+    let lockUntil = 0;
+    let gesturing = false;
+    let gestureClear: ReturnType<typeof setTimeout> | null = null;
+    const onGestureStart = (e: { originalEvent?: Event }) => {
+      if (!e?.originalEvent) return;
+      gesturing = true;
+      if (gestureClear) {
+        clearTimeout(gestureClear);
+        gestureClear = null;
+      }
+    };
+    const onGestureEnd = (e: { originalEvent?: Event }) => {
+      if (!e?.originalEvent && !gesturing) return;
+      if (gestureClear) clearTimeout(gestureClear);
+      gestureClear = setTimeout(() => {
+        gesturing = false;
+        gestureClear = null;
+        // Operator framing becomes the next lock default.
+        try {
+          writeIssFollowViewPrefs({
+            pitch: map.getPitch(),
+            zoom: map.getZoom(),
+            lagMs,
+            feedId: issCamFeedId ?? undefined,
+          });
+        } catch {
+          /* ignore */
+        }
+      }, 280);
+    };
+    const handlerBusy = () => {
+      try {
+        const m = map as maplibregl.Map & {
+          dragPan?: { isActive?: () => boolean };
+          dragRotate?: { isActive?: () => boolean };
+          touchPitch?: { isActive?: () => boolean };
+          scrollZoom?: { isActive?: () => boolean };
+        };
+        return Boolean(
+          m.dragPan?.isActive?.() ||
+            m.dragRotate?.isActive?.() ||
+            m.touchPitch?.isActive?.() ||
+            m.scrollZoom?.isActive?.(),
+        );
+      } catch {
+        return false;
+      }
+    };
+    for (const ev of ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart'] as const) {
+      map.on(ev, onGestureStart);
+    }
+    for (const ev of ['dragend', 'zoomend', 'pitchend', 'rotateend'] as const) {
+      map.on(ev, onGestureEnd);
+    }
+    const sample = (when: Date) => {
+      // Trail wall-clock by stream lag so the map matches the buffered YouTube frame.
+      const videoWhen = new Date(when.getTime() - lagMs);
+      const now = propagateTLE(line1, line2, videoWhen);
+      const ahead = propagateTLE(line1, line2, new Date(videoWhen.getTime() + 20_000));
+      if (!now || !ahead) return null;
+      return { ...now, bearing: groundTrackBearing(now, ahead) };
+    };
+    const tick = () => {
+      const t = sample(new Date());
+      if (t) {
+        const bearing = profile.trackUp ? t.bearing : 0;
+        if (!locked) {
+          locked = true;
+          lockUntil = performance.now() + ISS_FOLLOW_LOCK_MS;
+          // Prefer operator-saved defaults; only seed from the live camera once.
+          const view = resolveIssFollowLockView({
+            feedId: issCamFeedId,
+            altKm: t.altKm,
+            latitude: t.lat,
+            viewportCssWidth: map.getContainer()?.clientWidth || 960,
+          });
+          map.easeTo({
+            center: [t.lng, t.lat],
+            zoom: view.zoom,
+            pitch: view.pitch,
+            bearing,
+            duration: ISS_FOLLOW_LOCK_MS,
+            essential: true,
+          });
+        } else if (
+          !gesturing &&
+          !handlerBusy() &&
+          performance.now() >= lockUntil
+        ) {
+          map.setCenter([t.lng, t.lat]);
+          if (profile.trackUp) map.setBearing(bearing);
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      if (gestureClear) clearTimeout(gestureClear);
+      for (const ev of ['dragstart', 'zoomstart', 'pitchstart', 'rotatestart'] as const) {
+        map.off(ev, onGestureStart);
+      }
+      for (const ev of ['dragend', 'zoomend', 'pitchend', 'rotateend'] as const) {
+        map.off(ev, onGestureEnd);
+      }
+    };
+  }, [mapReady, issFollowTle, issCamFeedId, issStreamLagMs]);
+
   // Restore the selected view only when guidance ends, not on first map load.
   useEffect(() => {
     const ended = wasNavigating.current && !navigating;
@@ -3412,6 +6301,72 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     return () => { map.off('zoomend', onZoom); };
   }, [mapReady, selectedSat, clearSat]);
 
+  const clearTrackOverlays = useCallback((kinds?: TrackKind[]) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const all = !kinds?.length;
+    if (all || kinds?.includes('ship')) {
+      (map.getSource('selected-ship-track') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC as never);
+    }
+    if (all || kinds?.includes('flight')) {
+      (map.getSource('selected-flight-track') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC as never);
+    }
+    if (all || kinds?.includes('transit')) {
+      transitRouteAbortRef.current?.abort();
+      transitRouteAbortRef.current = null;
+      (map.getSource('transit-route') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC as never);
+      (map.getSource('transit-route-stops') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC as never);
+    }
+  }, []);
+
+  const onDockClearAll = useCallback(() => {
+    shipTrackAbortsRef.current.forEach((a) => a.abort());
+    shipTrackAbortsRef.current.clear();
+    clearTrackOverlays();
+    setTrackSel((s) => clearAllTracks(s));
+  }, [clearTrackOverlays]);
+
+  const onDockRemove = useCallback((kind: TrackKind, id: string) => {
+    if (kind === 'ship') {
+      shipTrackAbortsRef.current.get(id)?.abort();
+      shipTrackAbortsRef.current.delete(id);
+    }
+    if (kind === 'transit') clearTrackOverlays(['transit']);
+    if (kind === 'flight') clearTrackOverlays(['flight']);
+    setTrackSel((s) => removeTrack(s, kind, id));
+  }, [clearTrackOverlays]);
+
+  const onDockFocus = useCallback((kind: TrackKind, id: string) => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (kind === 'ship') {
+      const ship = trackSel.ships.find((s) => s.id === id);
+      const coords = ship?.coordinates;
+      if (!coords || coords.length < 2) return;
+      const bounds = coords.reduce(
+        (b, c) => b.extend(c as [number, number]),
+        new maplibregl.LngLatBounds(coords[0] as [number, number], coords[0] as [number, number]),
+      );
+      map.fitBounds(bounds, { padding: 40, maxZoom: 12, duration: 800 });
+      return;
+    }
+    const srcId = kind === 'flight' ? 'selected-flight-track' : 'transit-route';
+    const feats = map.querySourceFeatures(srcId);
+    const line = feats.find((f) => f.geometry?.type === 'LineString');
+    const lineCoords =
+      line && line.geometry.type === 'LineString'
+        ? (line.geometry.coordinates as [number, number][])
+        : null;
+    if (!lineCoords || lineCoords.length < 2) return;
+    const bounds = lineCoords.reduce(
+      (b, c) => b.extend(c),
+      new maplibregl.LngLatBounds(lineCoords[0], lineCoords[0]),
+    );
+    map.fitBounds(bounds, { padding: 40, maxZoom: 14, duration: 800 });
+  }, [trackSel.ships]);
+
+  const dockRowList = dockRows(trackSel);
+
   return (
     <>
       <div ref={containerRef} className="absolute inset-0 w-full h-full" />
@@ -3439,11 +6394,85 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
         />
       )}
       {selectedSat && <SatelliteCard sat={selectedSat} onClose={clearSat} />}
-      {mapReady && <MapControls mapRef={mapRef} onInteract={onFollowInterrupt} />}
-      {mapReady && (activeLayers.wind || activeLayers.rain) && (
+      {mapReady && (
+        <ActiveTracksDock
+          rows={dockRowList}
+          onRemove={onDockRemove}
+          onClearAll={onDockClearAll}
+          onFocus={onDockFocus}
+        />
+      )}
+      {mapReady && (activeLayers.gps_jam || activeLayers.paleo_sl || activeLayers.leylines) && (
         <div className={DOCK}>
-          {activeLayers.wind && <WindBar mapRef={mapRef} controls={!!activeLayers.wind_controls} onOff={() => onLayerOff?.('wind')} />}
-          {activeLayers.rain && <RainBar mapRef={mapRef} mapStyle={mapStyle} controls={!!activeLayers.rain_controls} onOff={() => onLayerOff?.('rain')} />}
+          {activeLayers.paleo_sl && (
+            <PaleoBar
+              mode={paleoMode}
+              meters={paleoMeters}
+              ageMa={paleoAgeMa}
+              ages={paleoAges}
+              controls={!!activeLayers.paleo_sl_controls}
+              loading={paleoLoading}
+              onMode={(m) => {
+                setPaleoMode(m);
+                try {
+                  localStorage.setItem('osiris.paleo.mode', m);
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onMeters={(m) => {
+                const v = clampSeaLevelMeters(m);
+                setPaleoMeters(v);
+                try {
+                  localStorage.setItem('osiris.paleo.meters', String(v));
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onAgeMa={(a) => {
+                setPaleoAgeMa(a);
+                try {
+                  localStorage.setItem('osiris.paleo.ageMa', String(a));
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onOff={() => onLayerOff?.('paleo_sl')}
+            />
+          )}
+          {activeLayers.leylines && (
+            <LeylinesBar
+              mode={leylinesMode}
+              controls={!!activeLayers.leylines_controls}
+              loading={leylinesLoading}
+              onMode={(m) => {
+                setLeylinesMode(m);
+                try {
+                  localStorage.setItem('osiris.leylines.mode', m);
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onOff={() => onLayerOff?.('leylines')}
+            />
+          )}
+          {activeLayers.gps_jam && (
+            <GpsJamBar
+              date={gpsJamDate}
+              dates={gpsJamDates}
+              controls={!!activeLayers.gps_jam_controls}
+              loading={gpsJamLoading}
+              onDate={(d) => {
+                setGpsJamDate(d);
+                try {
+                  localStorage.setItem('osiris.gpsjam.date', d);
+                } catch {
+                  /* ignore */
+                }
+              }}
+              onOff={() => onLayerOff?.('gps_jam')}
+            />
+          )}
         </div>
       )}
     </>

@@ -1,0 +1,249 @@
+﻿diff --git a/desktop/dev.mjs b/desktop/dev.mjs
+new file mode 100644
+index 0000000..7414a26
+--- /dev/null
++++ b/desktop/dev.mjs
+@@ -0,0 +1,9 @@
++import { spawn } from 'node:child_process';
++import { join } from 'node:path';
++
++process.env.OSIRIS_DESKTOP_DEV = '1';
++const electron = join(import.meta.dirname, '..', 'node_modules', 'electron', 'cli.js');
++spawn(process.execPath, [electron, join(import.meta.dirname, '..')], {
++  stdio: 'inherit',
++  env: process.env,
++}).on('exit', (c) => process.exit(c ?? 0));
+diff --git a/desktop/download-node.mjs b/desktop/download-node.mjs
+new file mode 100644
+index 0000000..3fe7aeb
+--- /dev/null
++++ b/desktop/download-node.mjs
+@@ -0,0 +1,136 @@
++/**
++ * Download official Node.js 22 LTS binary for the current platform into
++ * desktop/resources/node/ (node.exe on Windows, node elsewhere).
++ *
++ * Override version with NODE_VERSION=22.x.y
++ */
++import {
++  chmodSync,
++  copyFileSync,
++  createWriteStream,
++  existsSync,
++  mkdirSync,
++  readdirSync,
++  rmSync,
++  statSync,
++} from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import { pipeline } from 'node:stream/promises';
++import { execFileSync } from 'node:child_process';
++import { Readable } from 'node:stream';
++
++/** Pinned Node 22 LTS; override via NODE_VERSION env. */
++const NODE_VERSION = process.env.NODE_VERSION || '22.20.0';
++
++const root = join(import.meta.dirname, '..');
++const outDir = join(root, 'desktop', 'resources', 'node');
++
++function resolveAsset() {
++  const { platform, arch } = process;
++  const nodeArch = arch === 'ia32' ? 'x86' : arch;
++
++  if (platform === 'win32') {
++    return {
++      file: `node-v${NODE_VERSION}-win-${nodeArch}.zip`,
++      binaryName: 'node.exe',
++      binaryRel: `node-v${NODE_VERSION}-win-${nodeArch}/node.exe`,
++    };
++  }
++  if (platform === 'darwin') {
++    return {
++      file: `node-v${NODE_VERSION}-darwin-${nodeArch}.tar.gz`,
++      binaryName: 'node',
++      binaryRel: `node-v${NODE_VERSION}-darwin-${nodeArch}/bin/node`,
++    };
++  }
++  if (platform === 'linux') {
++    return {
++      file: `node-v${NODE_VERSION}-linux-${nodeArch}.tar.xz`,
++      binaryName: 'node',
++      binaryRel: `node-v${NODE_VERSION}-linux-${nodeArch}/bin/node`,
++    };
++  }
++  throw new Error(`Unsupported platform for Node download: ${platform}/${arch}`);
++}
++
++async function download(url, dest) {
++  const res = await fetch(url);
++  if (!res.ok) {
++    throw new Error(`Download failed (${res.status} ${res.statusText}): ${url}`);
++  }
++  if (!res.body) {
++    throw new Error(`Download returned empty body: ${url}`);
++  }
++  await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
++}
++
++function extractArchive(archivePath, extractDir) {
++  mkdirSync(extractDir, { recursive: true });
++  // Windows 10+ and Unix both ship tar that can handle zip/tar.gz/tar.xz
++  execFileSync('tar', ['-xf', archivePath, '-C', extractDir], { stdio: 'inherit' });
++}
++
++function findBinary(extractDir, binaryName) {
++  const stack = [extractDir];
++  while (stack.length) {
++    const dir = stack.pop();
++    for (const name of readdirSync(dir)) {
++      const full = join(dir, name);
++      const st = statSync(full);
++      if (st.isDirectory()) {
++        stack.push(full);
++      } else if (name === binaryName) {
++        return full;
++      }
++    }
++  }
++  return null;
++}
++
++async function main() {
++  const asset = resolveAsset();
++  const url = `https://nodejs.org/dist/v${NODE_VERSION}/${asset.file}`;
++  const work = join(tmpdir(), `osiris-node-${NODE_VERSION}-${process.pid}`);
++  const archivePath = join(work, asset.file);
++  const extractDir = join(work, 'extract');
++
++  console.log(`Fetching Node ${NODE_VERSION} for ${process.platform}/${process.arch}`);
++  console.log(`URL: ${url}`);
++
++  try {
++    rmSync(work, { recursive: true, force: true });
++    mkdirSync(work, { recursive: true });
++
++    await download(url, archivePath);
++    extractArchive(archivePath, extractDir);
++
++    const preferred = join(extractDir, asset.binaryRel);
++    const binaryPath = existsSync(preferred)
++      ? preferred
++      : findBinary(extractDir, asset.binaryName);
++
++    if (!binaryPath) {
++      throw new Error(`Extracted archive but did not find ${asset.binaryName}`);
++    }
++
++    rmSync(outDir, { recursive: true, force: true });
++    mkdirSync(outDir, { recursive: true });
++    const dest = join(outDir, asset.binaryName);
++    copyFileSync(binaryPath, dest);
++    if (process.platform !== 'win32') {
++      chmodSync(dest, 0o755);
++    }
++
++    console.log(`Node binary staged ΓåÆ ${dest}`);
++  } catch (err) {
++    const msg = err instanceof Error ? err.message : String(err);
++    console.error(`Failed to download Node ${NODE_VERSION}: ${msg}`);
++    console.error('Check network access to nodejs.org, or set NODE_VERSION to a published 22.x release.');
++    process.exit(1);
++  } finally {
++    rmSync(work, { recursive: true, force: true });
++  }
++}
++
++main();
+diff --git a/desktop/electron-builder.yml b/desktop/electron-builder.yml
+new file mode 100644
+index 0000000..0a28127
+--- /dev/null
++++ b/desktop/electron-builder.yml
+@@ -0,0 +1,27 @@
++appId: org.osiris.desktop
++productName: Osiris
++directories:
++  output: desktop/dist
++  buildResources: desktop/build
++files:
++  - desktop/main.mjs
++  - desktop/preload.mjs
++  - desktop/lib/**/*
++extraResources:
++  - from: desktop/resources/standalone
++    to: standalone
++  - from: desktop/resources/node
++    to: node
++win:
++  target:
++    - target: portable
++      arch: [x64]
++mac:
++  target:
++    - target: zip
++      arch: [x64, arm64]
++linux:
++  target:
++    - target: AppImage
++      arch: [x64]
++asar: true
+diff --git a/desktop/stage-standalone.mjs b/desktop/stage-standalone.mjs
+new file mode 100644
+index 0000000..23517ba
+--- /dev/null
++++ b/desktop/stage-standalone.mjs
+@@ -0,0 +1,19 @@
++import { cpSync, rmSync, existsSync, mkdirSync } from 'node:fs';
++import { join } from 'node:path';
++
++const root = join(import.meta.dirname, '..');
++const standalone = join(root, '.next', 'standalone');
++const staticDir = join(root, '.next', 'static');
++const publicDir = join(root, 'public');
++const out = join(root, 'desktop', 'resources', 'standalone');
++
++if (!existsSync(join(standalone, 'server.js'))) {
++  console.error('Missing .next/standalone/server.js ΓÇö run npm run build first');
++  process.exit(1);
++}
++rmSync(out, { recursive: true, force: true });
++mkdirSync(join(root, 'desktop', 'resources'), { recursive: true });
++cpSync(standalone, out, { recursive: true });
++cpSync(staticDir, join(out, '.next', 'static'), { recursive: true });
++cpSync(publicDir, join(out, 'public'), { recursive: true });
++console.log('Staged standalone ΓåÆ', out);
+diff --git a/package.json b/package.json
+index f2f737a..cd415de 100644
+--- a/package.json
++++ b/package.json
+@@ -2,6 +2,7 @@
+   "name": "osiris",
+   "version": "0.1.0",
+   "private": true,
++  "main": "desktop/main.mjs",
+   "scripts": {
+     "predev": "node tools/prepare-map-worker.mjs",
+     "dev": "next dev",
+@@ -11,7 +12,11 @@
+     "lint": "eslint",
+     "test": "vitest run",
+     "test:watch": "vitest",
+-    "test:live": "RUN_LIVE_TESTS=1 vitest run"
++    "test:live": "RUN_LIVE_TESTS=1 vitest run",
++    "desktop:dev": "node desktop/dev.mjs",
++    "desktop:stage": "node desktop/stage-standalone.mjs",
++    "desktop:node": "node desktop/download-node.mjs",
++    "desktop:pack": "npm run build && npm run desktop:stage && npm run desktop:node && electron-builder --config desktop/electron-builder.yml"
+   },
+   "dependencies": {
+     "@google/generative-ai": "^0.24.1",
+@@ -42,6 +47,8 @@
+     "@types/react-dom": "^19",
+     "@types/web-bluetooth": "^0.0.21",
+     "@types/ws": "^8.18.1",
++    "electron": "^44.7.2",
++    "electron-builder": "^26.15.3",
+     "eslint": "^9",
+     "eslint-config-next": "16.3.4",
+     "tailwindcss": "^4",

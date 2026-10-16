@@ -1,0 +1,103 @@
+﻿diff --git a/desktop/lib/paths.mjs b/desktop/lib/paths.mjs
+new file mode 100644
+index 0000000..ba4cb29
+--- /dev/null
++++ b/desktop/lib/paths.mjs
+@@ -0,0 +1,9 @@
++import { join } from 'node:path';
++
++export function resolveStandaloneDir(appLike) {
++  if (appLike.isPackaged) {
++    return join(appLike.resourcesPath, 'standalone');
++  }
++  // Dev production-smoke: repo .next/standalone
++  return join(appLike.getAppPath(), '..', '.next', 'standalone');
++}
+diff --git a/desktop/lib/paths.test.mjs b/desktop/lib/paths.test.mjs
+new file mode 100644
+index 0000000..4096fed
+--- /dev/null
++++ b/desktop/lib/paths.test.mjs
+@@ -0,0 +1,13 @@
++import { describe, it, expect } from 'vitest';
++import { resolveStandaloneDir } from './paths.mjs';
++
++describe('resolveStandaloneDir', () => {
++  it('uses resourcesPath/standalone when packaged', () => {
++    const dir = resolveStandaloneDir({
++      isPackaged: true,
++      resourcesPath: 'C:\\App\\resources',
++      getAppPath: () => 'C:\\App\\app.asar',
++    });
++    expect(dir.replace(/\\/g, '/')).toMatch(/resources\/standalone$/);
++  });
++});
+diff --git a/desktop/main.mjs b/desktop/main.mjs
+new file mode 100644
+index 0000000..6b72e98
+--- /dev/null
++++ b/desktop/main.mjs
+@@ -0,0 +1,54 @@
++import { app, BrowserWindow } from 'electron';
++import { dirname, join } from 'node:path';
++import { fileURLToPath } from 'node:url';
++import { findFreePort } from './lib/port.mjs';
++import { waitForHealth } from './lib/health.mjs';
++import { loadDesktopEnv } from './lib/env.mjs';
++
++const __dirname = dirname(fileURLToPath(import.meta.url));
++
++function createMainWindow() {
++  const win = new BrowserWindow({
++    width: 1280,
++    height: 800,
++    show: true,
++    webPreferences: {
++      preload: join(__dirname, 'preload.mjs'),
++      contextIsolation: true,
++      nodeIntegration: false,
++    },
++  });
++
++  win.loadURL('data:text/html,<h1>Osiris desktop shell</h1>');
++  return win;
++}
++
++if (!app.requestSingleInstanceLock()) {
++  app.quit();
++} else {
++  app.setName('Osiris');
++
++  app.on('second-instance', () => {
++    const win = BrowserWindow.getAllWindows()[0];
++    if (win) {
++      if (win.isMinimized()) win.restore();
++      win.focus();
++    }
++  });
++
++  app.whenReady().then(() => {
++    createMainWindow();
++  });
++
++  app.on('window-all-closed', () => {
++    if (process.platform !== 'darwin') {
++      app.quit();
++    }
++  });
++
++  app.on('activate', () => {
++    if (BrowserWindow.getAllWindows().length === 0) {
++      createMainWindow();
++    }
++  });
++}
+diff --git a/desktop/preload.mjs b/desktop/preload.mjs
+new file mode 100644
+index 0000000..f23ad46
+--- /dev/null
++++ b/desktop/preload.mjs
+@@ -0,0 +1,3 @@
++import { contextBridge } from 'electron';
++
++contextBridge.exposeInMainWorld('osirisDesktop', { isDesktop: true });

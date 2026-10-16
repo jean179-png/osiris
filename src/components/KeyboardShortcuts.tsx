@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { Keyboard, X } from 'lucide-react';
+import FloatingWindow from '@/components/FloatingWindow';
 
 const SHORTCUTS = [
   { key: 'F', desc: 'Toggle fullscreen' },
@@ -29,46 +29,50 @@ export default function KeyboardShortcuts() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  if (!isOpen) return null;
+
+  const vpW = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const vpH = typeof window !== 'undefined' ? window.innerHeight : 800;
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.95 }}
-          className="fixed inset-0 z-[500] flex items-center justify-center pointer-events-auto"
-          onClick={() => setIsOpen(false)}
-        >
-          <div className="absolute inset-0 bg-[var(--bg-void)]/80 backdrop-blur-sm" />
-          <motion.div
-            onClick={e => e.stopPropagation()}
-            className="relative glass-panel p-6 w-[320px] osiris-glow"
-          >
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Keyboard className="w-4 h-4 text-[var(--gold-primary)]" />
-                <span className="text-sm font-mono font-bold text-[var(--text-heading)] tracking-wider">SHORTCUTS</span>
-              </div>
-              <button onClick={() => setIsOpen(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-                <X className="w-4 h-4" />
-              </button>
+    <>
+      <div
+        className="fixed inset-0 z-[500] bg-[var(--bg-void)]/80 backdrop-blur-sm pointer-events-auto"
+        onClick={() => setIsOpen(false)}
+        aria-hidden
+      />
+      <FloatingWindow
+        storageKey="keyboard-shortcuts"
+        aria-label="Keyboard shortcuts"
+        zIndex={510}
+        minWidth={280}
+        minHeight={280}
+        defaultRect={{ x: Math.round(vpW / 2 - 160), y: Math.round(vpH / 2 - 200), w: 320, h: 400 }}
+        className="glass-panel osiris-glow p-0"
+      >
+        <div data-drag-handle className="flex cursor-grab items-center justify-between px-6 pt-6 pb-2 active:cursor-grabbing">
+          <div className="flex items-center gap-2">
+            <Keyboard className="w-4 h-4 text-[var(--gold-primary)]" />
+            <span className="text-sm font-mono font-bold text-[var(--text-heading)] tracking-wider">SHORTCUTS</span>
+          </div>
+          <button onClick={() => setIsOpen(false)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="space-y-2 px-6 pb-4 overflow-y-auto styled-scrollbar flex-1 min-h-0">
+          {SHORTCUTS.map(s => (
+            <div key={s.key} className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-[var(--text-secondary)]">{s.desc}</span>
+              <kbd className="px-2 py-0.5 rounded text-[9px] font-mono font-bold text-[var(--gold-primary)] bg-[var(--bg-void)] border border-[var(--border-primary)]">
+                {s.key}
+              </kbd>
             </div>
-            <div className="space-y-2">
-              {SHORTCUTS.map(s => (
-                <div key={s.key} className="flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-[var(--text-secondary)]">{s.desc}</span>
-                  <kbd className="px-2 py-0.5 rounded text-[9px] font-mono font-bold text-[var(--gold-primary)] bg-[var(--bg-void)] border border-[var(--border-primary)]">
-                    {s.key}
-                  </kbd>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4 text-center text-[9px] font-mono text-[var(--text-muted)] tracking-widest">
-              PRESS [?] OR [ESC] TO CLOSE
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+          ))}
+        </div>
+        <div className="px-6 pb-6 text-center text-[9px] font-mono text-[var(--text-muted)] tracking-widest shrink-0">
+          PRESS [?] OR [ESC] TO CLOSE
+        </div>
+      </FloatingWindow>
+    </>
   );
 }

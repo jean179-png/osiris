@@ -20,7 +20,6 @@
  * the selected object and then the workspace.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
 import { Check, Copy, GanttChart, Globe2, Minimize2, Network, Plus, Table2 } from 'lucide-react';
 import type { OiClient } from '@/lib/oi/client';
 import { workspaceLayout } from '@/lib/oi/layout';
@@ -40,6 +39,7 @@ import { TimelineView } from './TimelineView';
 import { TableView } from './TableView';
 import { ObjectSearch, type ObjectSearchHandle } from './ObjectSearch';
 import { ModeSwitch, modeTint, type OiMode } from './ModeSwitch';
+import FloatingWindow from '@/components/FloatingWindow';
 
 export type Stage = 'globe' | 'graph' | 'timeline' | 'table';
 export const STAGES: Stage[] = ['globe', 'graph', 'timeline', 'table'];
@@ -142,6 +142,8 @@ export function Workspace(p: WorkspaceProps) {
 
   const right = s ? L.right + L.gap * 2 : L.gap;
   const stageBox = { left: L.left + L.gap * 2, right, top: L.top, bottom: L.gap };
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1440;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 900;
 
   return (
     <div className="fixed inset-0 z-[900] pointer-events-none" role="dialog" aria-label="OI workspace">
@@ -149,7 +151,19 @@ export function Workspace(p: WorkspaceProps) {
       <div className="absolute inset-x-0 bottom-0 h-[60px]" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.78) 40%, transparent)' }} />
 
       {/* ── Top bar ── */}
-      <header className="glass-panel oi-glass absolute pointer-events-auto flex items-center gap-3 px-3" style={{ left: L.gap, right: L.gap, top: L.gap, height: 56 }}>
+      <FloatingWindow
+        storageKey="oi-ws-top"
+        role="banner"
+        aria-label="OI workspace top bar"
+        zIndex={920}
+        draggable
+        resizable
+        minWidth={420}
+        minHeight={56}
+        defaultRect={{ x: L.gap, y: L.gap, w: Math.max(420, vw - L.gap * 2), h: 56 }}
+        className="glass-panel oi-glass !h-auto pointer-events-auto"
+      >
+      <header data-drag-handle className="flex h-full cursor-grab items-center gap-3 px-3 active:cursor-grabbing">
         <div className="flex items-center gap-2 flex-shrink-0 pl-1">
           <OiMark size={18} live={s?.status === 'running' || p.assistBusy} assist={p.mode === 'assist'} />
           <span className="hud-text text-[12px] text-[var(--text-heading)]">OI</span>
@@ -193,11 +207,21 @@ export function Workspace(p: WorkspaceProps) {
           </span>
         )}
       </header>
+      </FloatingWindow>
 
       {/* ── Left: the command column ── */}
-      <aside className="glass-panel oi-glass absolute pointer-events-auto flex flex-col overflow-hidden" style={{ left: L.gap, top: L.top, bottom: L.gap, width: L.left }} aria-label={p.mode === 'assist' ? 'OI Assist' : 'Forecast'}>
+      <FloatingWindow
+        storageKey="oi-ws-left"
+        aria-label={p.mode === 'assist' ? 'OI Assist' : 'Forecast'}
+        zIndex={910}
+        minWidth={280}
+        minHeight={240}
+        defaultRect={{ x: L.gap, y: L.top, w: L.left, h: Math.max(240, vh - L.top - L.gap) }}
+        className="glass-panel oi-glass pointer-events-auto"
+      >
+      <aside className="flex h-full min-h-0 flex-col overflow-hidden" aria-label={p.mode === 'assist' ? 'OI Assist' : 'Forecast'}>
         <span className="absolute inset-x-0 top-0 h-px z-10" style={{ background: `linear-gradient(90deg, transparent, ${modeTint(p.mode)(0.75)} 30%, ${modeTint(p.mode)(0.75)} 70%, transparent)` }} aria-hidden />
-        <div className="px-3 py-2.5 border-b border-[var(--border-secondary)] flex-shrink-0">
+        <div data-drag-handle className="cursor-grab px-3 py-2.5 border-b border-[var(--border-secondary)] flex-shrink-0 active:cursor-grabbing">
           <ModeSwitch id="ws" mode={p.mode} onMode={p.onMode} forecastLive={s?.status === 'running'} assistBusy={p.assistBusy} />
         </div>
         {p.mode === 'assist' ? (
@@ -229,29 +253,58 @@ export function Workspace(p: WorkspaceProps) {
           </div>
         )}
       </aside>
+      </FloatingWindow>
 
       {/* ── Right: the selected object, or the run's lists ── */}
       {s && (
-        <aside className="glass-panel oi-glass absolute pointer-events-auto flex flex-col overflow-hidden" style={{ right: L.gap, top: L.top, bottom: L.gap, width: L.right }} aria-label={selection ? 'Object' : 'Lists'}>
-          {selection
-            ? <ObjectView key={selection.key} s={s} sel={selection} onSelect={onSelect} onLocate={p.onLocate} onAsk={p.onAsk} onGraph={() => onStage('graph')} variant="panel" onBack={() => onSelect(null)} />
-            : p.lists}
+        <FloatingWindow
+          storageKey="oi-ws-right"
+          aria-label={selection ? 'Object' : 'Lists'}
+          zIndex={910}
+          minWidth={280}
+          minHeight={240}
+          defaultRect={{ x: Math.max(L.gap, vw - L.gap - L.right), y: L.top, w: L.right, h: Math.max(240, vh - L.top - L.gap) }}
+          className="glass-panel oi-glass pointer-events-auto"
+        >
+        <aside className="flex h-full min-h-0 flex-col overflow-hidden" aria-label={selection ? 'Object' : 'Lists'}>
+          <div data-drag-handle className="h-6 shrink-0 cursor-grab border-b border-[var(--border-secondary)] active:cursor-grabbing" aria-hidden />
+          <div className="min-h-0 flex-1 overflow-hidden flex flex-col">
+            {selection
+              ? <ObjectView key={selection.key} s={s} sel={selection} onSelect={onSelect} onLocate={p.onLocate} onAsk={p.onAsk} onGraph={() => onStage('graph')} variant="panel" onBack={() => onSelect(null)} />
+              : p.lists}
+          </div>
         </aside>
+        </FloatingWindow>
       )}
 
       {/* ── The stage ── */}
-      <AnimatePresence>
-        {s && shown !== 'globe' && (
-          <motion.div key={shown} initial={{ opacity: 0, scale: 0.985 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.985 }} transition={{ duration: 0.2 }}
-            className="glass-panel oi-glass absolute pointer-events-auto overflow-hidden" style={{ ...stageBox, background: SOLID }}>
+      {s && shown !== 'globe' && (
+        <FloatingWindow
+          key={shown}
+          storageKey={`oi-ws-stage-${shown}`}
+          aria-label={`OI ${shown}`}
+          zIndex={905}
+          minWidth={320}
+          minHeight={240}
+          defaultRect={{
+            x: stageBox.left,
+            y: stageBox.top,
+            w: Math.max(320, vw - stageBox.left - stageBox.right),
+            h: Math.max(240, vh - stageBox.top - stageBox.bottom),
+          }}
+          className="glass-panel oi-glass pointer-events-auto overflow-hidden"
+          style={{ background: SOLID }}
+        >
+          <div data-drag-handle className="h-6 shrink-0 cursor-grab border-b border-[var(--border-secondary)] active:cursor-grabbing" aria-hidden />
+          <div className="min-h-0 flex-1 overflow-hidden">
             <ErrorBoundary name={`OI ${shown}`}>
               {shown === 'graph' && <GraphView s={s} selected={selected} onSelect={onSelect} />}
               {shown === 'timeline' && <TimelineView s={s} selected={selected} onSelect={onSelect} />}
               {shown === 'table' && <TableView s={s} selected={selected} onSelect={onSelect} />}
             </ErrorBoundary>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+        </FloatingWindow>
+      )}
       {shown === 'globe' && (
         <div className="absolute flex justify-center pointer-events-none" style={{ left: stageBox.left, right: stageBox.right, bottom: L.gap + 12 }}>
           {s ? (

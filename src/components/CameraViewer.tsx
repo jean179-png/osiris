@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
 import { X, ExternalLink, RefreshCw, MapPin, Camera, CameraOff, Maximize2, PlayCircle } from 'lucide-react';
 import Hls from 'hls.js';
 import { isHostedOffPlatform, liveFeedAtSource, localEmbed, needsResolution, offPlatformView } from '@/lib/camera-feed';
 import { clearLook, registerVideo } from '@/lib/vision/store';
 import CameraVision, { VisionReport } from './CameraVision';
+import FloatingWindow from '@/components/FloatingWindow';
 
 interface CameraViewerProps {
   camera: any | null;
@@ -179,20 +179,29 @@ export default function CameraViewer({ camera, onClose, onLocate, besideOi = fal
 
   if (!camera) return null;
 
+  const vpW = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const vpH = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const defaultRect = fullscreen
+    ? { x: 16, y: 16, w: Math.max(480, vpW - 32), h: Math.max(320, vpH - 32) }
+    : {
+        x: Math.max(24, vpW - (besideOi ? 500 : 24) - 480),
+        y: Math.max(72, vpH - 70 - 420),
+        w: Math.min(480, vpW - 48),
+        h: 420,
+      };
+
   return (
-    <AnimatePresence>
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95, y: 10 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.95 }}
-          transition={{ duration: 0.3, type: "spring", bounce: 0 }}
-          className={`fixed z-[500] ${
-            fullscreen 
-              ? 'inset-2 md:inset-4' 
-              : `bottom-[70px] left-2 right-2 md:bottom-6 ${besideOi ? 'md:right-[500px]' : 'md:right-6'} md:left-auto md:w-[480px]`
-          }`}
-        >
-          <div className="overflow-hidden h-full flex flex-col bg-black/85 backdrop-blur-xl border border-[var(--border-primary)]" style={{ boxShadow: '0 20px 50px rgba(0,0,0,0.9), inset 0 0 30px rgba(0,0,0,0.8)' }}>
+    <FloatingWindow
+      storageKey={fullscreen ? 'camera-viewer-fs' : 'camera-viewer'}
+      aria-label={`Camera ${camera.name}`}
+      zIndex={500}
+      minWidth={280}
+      minHeight={220}
+      defaultRect={defaultRect}
+      className="border border-[var(--border-primary)] bg-black/85 backdrop-blur-xl"
+      style={{ boxShadow: '0 20px 50px rgba(0,0,0,0.9), inset 0 0 30px rgba(0,0,0,0.8)' }}
+    >
+          <div className="relative overflow-hidden h-full flex flex-col">
             
             {/* Tactical Grid Overlay on background */}
             <div className="absolute inset-0 pointer-events-none opacity-20" style={{
@@ -201,7 +210,7 @@ export default function CameraViewer({ camera, onClose, onLocate, besideOi = fal
             }} />
 
             {/* Tactical Header */}
-            <div className="flex flex-col border-b border-[var(--border-primary)] bg-black/60 relative z-10">
+            <div data-drag-handle className="flex flex-col border-b border-[var(--border-primary)] bg-black/60 relative z-10 cursor-grab active:cursor-grabbing">
               {/* Top Meta Bar */}
               <div className="flex items-center justify-between px-3 py-1 border-b border-white/5 text-[9px] font-mono tracking-[0.2em] text-[var(--text-muted)] bg-[var(--hover-accent)]">
                 <div className="flex items-center gap-3">
@@ -437,7 +446,6 @@ export default function CameraViewer({ camera, onClose, onLocate, besideOi = fal
             </div>
           </div>
         </div>
-      </motion.div>
-    </AnimatePresence>
+    </FloatingWindow>
   );
 }

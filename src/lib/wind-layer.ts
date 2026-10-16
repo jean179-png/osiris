@@ -1,5 +1,5 @@
 import { LngLat, type Map as MlMap } from 'maplibre-gl';
-import type { WindField } from './wind-field';
+import type { WindField } from './gfs-wind-field';
 
 /**
  * OSIRIS — Wind drawn as it blows.

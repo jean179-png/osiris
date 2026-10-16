@@ -1,0 +1,36 @@
+appId: org.osiris.desktop
+productName: Osiris
+directories:
+  output: desktop/dist
+  buildResources: desktop/build
+# Root node_modules is skipped by electron-builder's extraResources filter;
+# desktop/after-pack.cjs copies the Next standalone node_modules afterward.
+afterPack: ./desktop/after-pack.cjs
+files:
+  - desktop/main.mjs
+  - desktop/preload.mjs
+  - desktop/lib/**/*
+extraResources:
+  - from: desktop/resources/standalone
+    to: standalone
+    filter:
+      - "**/*"
+      - "**/.*"
+  - from: desktop/resources/node
+    to: node
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: portable
+      arch: [x64]
+mac:
+  target:
+    - target: zip
+      arch: [x64, arm64]
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+asar: true

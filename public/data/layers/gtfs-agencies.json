@@ -1,0 +1,198 @@
+[
+  {
+    "id": "mbta",
+    "name": "MBTA",
+    "vehicleUrl": "https://cdn.mbta.com/realtime/VehiclePositions.pb",
+    "alertUrl": "https://cdn.mbta.com/realtime/Alerts.pb",
+    "staticGtfsUrl": "https://cdn.mbta.com/MBTA_GTFS.zip",
+    "bbox": [-71.9, 41.5, -69.9, 42.9]
+  },
+  {
+    "id": "ripta",
+    "name": "RIPTA",
+    "vehicleUrl": "http://realtime.ripta.com:81/api/vehiclepositions?format=gtfs.proto",
+    "alertUrl": "http://realtime.ripta.com:81/api/servicealerts?format=gtfs.proto",
+    "staticGtfsUrl": "https://ripta.com/RIPTA-GTFS.zip",
+    "bbox": [-71.95, 41.1, -71.05, 42.05]
+  },
+  {
+    "id": "cttransit",
+    "name": "CTtransit",
+    "vehicleUrl": "https://cttprdtmgtfs.ctttrpcloud.com/TMGTFSRealTimeWebService/Vehicle/VehiclePositions.pb",
+    "alertUrl": "https://cttprdtmgtfs.ctttrpcloud.com/TMGTFSRealTimeWebService/Alert/Alerts.pb",
+    "staticGtfsUrl": "https://www.cttransit.com/sites/default/files/gtfs/googlect_transit.zip",
+    "bbox": [-73.75, 40.95, -71.75, 42.1]
+  },
+  {
+    "id": "mta-bus",
+    "name": "MTA NYCT Bus",
+    "vehicleUrl": "https://gtfsrt.prod.obanyc.com/vehiclePositions",
+    "staticGtfsUrl": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_b.zip",
+    "bbox": [-74.3, 40.4, -73.6, 41.0]
+  },
+  {
+    "id": "king-county-metro",
+    "name": "King County Metro",
+    "vehicleUrl": "https://s3.amazonaws.com/kcm-alerts-realtime-prod/vehiclepositions.pb",
+    "alertUrl": "https://s3.amazonaws.com/kcm-alerts-realtime-prod/alerts.pb",
+    "staticGtfsUrl": "https://gtfs.sound.obaweb.org/prod/1_gtfs.zip",
+    "bbox": [-122.55, 47.15, -121.75, 47.9]
+  },
+  {
+    "id": "marta",
+    "name": "MARTA",
+    "vehicleUrl": "https://gtfs-rt.itsmarta.com/TMGTFSRealTimeWebService/vehicle/vehiclepositions.pb",
+    "staticGtfsUrl": "https://www.itsmarta.com/google_transit_feed/google_transit.zip",
+    "bbox": [-84.7, 33.4, -84.05, 34.15]
+  },
+  {
+    "id": "rtd-denver",
+    "name": "RTD Denver",
+    "vehicleUrl": "https://www.rtd-denver.com/files/gtfs-rt/VehiclePosition.pb",
+    "alertUrl": "https://www.rtd-denver.com/files/gtfs-rt/Alerts.pb",
+    "staticGtfsUrl": "https://www.rtd-denver.com/files/gtfs/google_transit.zip",
+    "bbox": [-105.6, 39.4, -104.6, 40.25]
+  },
+  {
+    "id": "metro-transit-msp",
+    "name": "Metro Transit Minneapolis–St. Paul",
+    "vehicleUrl": "https://svc.metrotransit.org/mtgtfs/vehiclepositions.pb",
+    "alertUrl": "https://svc.metrotransit.org/mtgtfs/alerts.pb",
+    "staticGtfsUrl": "https://svc.metrotransit.org/mtgtfs/gtfs.zip",
+    "bbox": [-94.2, 44.7, -92.8, 45.6]
+  },
+  {
+    "id": "septa-bus",
+    "name": "SEPTA Bus",
+    "vehicleUrl": "https://www3.septa.org/gtfsrt/septa-pa-us/Vehicle/rtVehiclePosition.pb",
+    "alertUrl": "https://www3.septa.org/gtfsrt/septa-pa-us/Alerts/gtfsrt_alerts.pb",
+    "staticGtfsUrl": "https://www3.septa.org/developer/google_bus.zip",
+    "bbox": [-75.85, 39.8, -74.75, 40.35]
+  },
+  {
+    "id": "ttc",
+    "name": "Toronto Transit Commission",
+    "vehicleUrl": "https://bustime.ttc.ca/gtfsrt/vehicles",
+    "staticGtfsUrl": "https://opendata.toronto.ca/toronto.transit.commission/ttc-routes-and-schedules/OpenData_TTC_Schedules.zip",
+    "bbox": [-79.7, 43.55, -79.1, 43.95]
+  },
+  {
+    "id": "edmonton",
+    "name": "Edmonton Transit",
+    "vehicleUrl": "https://gtfs.edmonton.ca/TMGTFSRealTimeWebService/Vehicle/VehiclePositions.pb",
+    "alertUrl": "https://gtfs.edmonton.ca/TMGTFSRealTimeWebService/Alert/Alerts.pb",
+    "staticGtfsUrl": "https://gtfs.edmonton.ca/TMGTFSRealTimeWebService/GTFS/GTFS.zip",
+    "bbox": [-114.0, 53.3, -113.2, 53.75]
+  },
+  {
+    "id": "big-blue-bus",
+    "name": "Santa Monica Big Blue Bus",
+    "vehicleUrl": "https://gtfs.bigbluebus.com/vehiclepositions.bin",
+    "alertUrl": "https://gtfs.bigbluebus.com/alerts.bin",
+    "staticGtfsUrl": "https://gtfs.bigbluebus.com/current.zip",
+    "bbox": [-118.55, 33.9, -118.2, 34.1]
+  },
+  {
+    "id": "octa",
+    "name": "OCTA",
+    "vehicleUrl": "https://api.octa.net/GTFSRealTime/protoBuf/VehiclePositions.aspx",
+    "alertUrl": "https://api.octa.net/GTFSRealTime/protoBuf/servicealerts.aspx",
+    "staticGtfsUrl": "https://www.octa.net/current/google_transit.zip",
+    "bbox": [-118.15, 33.35, -117.55, 33.95]
+  },
+  {
+    "id": "paac-bus",
+    "name": "Pittsburgh Port Authority Bus",
+    "vehicleUrl": "https://truetime.portauthority.org/gtfsrt-bus/vehicles",
+    "alertUrl": "https://truetime.portauthority.org/gtfsrt-bus/alerts",
+    "staticGtfsUrl": "https://www.portauthority.org/developerresources/GTFS.zip",
+    "bbox": [-80.3, 40.25, -79.65, 40.7]
+  },
+  {
+    "id": "capmetro",
+    "name": "CapMetro Austin",
+    "vehicleUrl": "https://data.texas.gov/download/eiei-9rpf/application%2Foctet-stream",
+    "alertUrl": "https://data.texas.gov/download/9zu9-jwr2/text%2Fplain",
+    "staticGtfsUrl": "https://data.texas.gov/download/r4v4-vz24/application/zip",
+    "bbox": [-98.0, 30.1, -97.35, 30.6]
+  },
+  {
+    "id": "wmata-bus",
+    "name": "WMATA Bus",
+    "vehicleUrl": "https://api.wmata.com/gtfs/bus-gtfsrt-vehiclepositions.pb",
+    "alertUrl": "https://api.wmata.com/gtfs/bus-gtfsrt-alerts.pb",
+    "staticGtfsUrl": "https://api.wmata.com/gtfs/bus-gtfs-static.zip",
+    "bbox": [-77.5, 38.65, -76.7, 39.2],
+    "apiKeyEnv": "WMATA_API_KEY"
+  },
+  {
+    "id": "sfmta",
+    "name": "SF Muni (511)",
+    "vehicleUrl": "https://api.511.org/transit/vehiclepositions?agency=SF",
+    "alertUrl": "https://api.511.org/transit/servicealerts?agency=SF",
+    "staticGtfsUrl": "https://gtfs.sfmta.com/transitdata/google_transit.zip",
+    "bbox": [-122.55, 37.7, -122.35, 37.85],
+    "apiKeyEnv": "SFMTA_511_API_KEY"
+  },
+  {
+    "id": "hsl",
+    "name": "HSL Helsinki",
+    "vehicleUrl": "https://realtime.hsl.fi/realtime/vehicle-positions/v2/hsl",
+    "staticGtfsUrl": "https://dev.hsl.fi/gtfs/hsl.zip",
+    "bbox": [24.5, 59.85, 25.5, 60.5]
+  },
+  {
+    "id": "ovapi",
+    "name": "OVapi Netherlands",
+    "vehicleUrl": "http://gtfs.ovapi.nl/nl/vehiclePositions.pb",
+    "alertUrl": "http://gtfs.ovapi.nl/nl/alerts.pb",
+    "staticGtfsUrl": "http://gtfs.ovapi.nl/gtfs-nl.zip",
+    "bbox": [3.2, 50.7, 7.3, 53.7]
+  },
+  {
+    "id": "entur",
+    "name": "Entur Norway",
+    "vehicleUrl": "https://api.entur.io/realtime/v1/gtfs-rt/vehicle-positions",
+    "staticGtfsUrl": "https://storage.googleapis.com/marduk-production/outbound/gtfs/rb_norway-aggregated-gtfs.zip",
+    "bbox": [4.5, 57.8, 31.5, 71.5]
+  },
+  {
+    "id": "roma",
+    "name": "Roma Mobilità",
+    "vehicleUrl": "https://romamobilita.it/sites/default/files/rome_rtgtfs_vehicle_positions_feed.pb",
+    "alertUrl": "https://romamobilita.it/sites/default/files/rome_rtgtfs_service_alerts_feed.pb",
+    "staticGtfsUrl": "https://romamobilita.it/sites/default/files/rome_static_gtfs.zip",
+    "bbox": [12.1, 41.65, 12.8, 42.05]
+  },
+  {
+    "id": "carris-metro",
+    "name": "Carris Metropolitana",
+    "vehicleUrl": "https://api.carrismetropolitana.pt/vehicles.pb",
+    "alertUrl": "https://api.carrismetropolitana.pt/alerts.pb",
+    "staticGtfsUrl": "https://api.carrismetropolitana.pt/gtfs",
+    "bbox": [-9.55, 38.4, -8.4, 39.1]
+  },
+  {
+    "id": "tpbi",
+    "name": "TPBI Bucharest",
+    "vehicleUrl": "https://gtfs.tpbi.ro/api/gtfs-rt/vehiclePositions",
+    "staticGtfsUrl": "https://gtfs.tpbi.ro/regional/BUCHAREST-REGION.zip",
+    "bbox": [25.85, 44.25, 26.4, 44.75]
+  },
+  {
+    "id": "translink-seq",
+    "name": "TransLink SEQ Brisbane",
+    "vehicleUrl": "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions",
+    "alertUrl": "https://gtfsrt.api.translink.com.au/api/realtime/SEQ/Alerts",
+    "staticGtfsUrl": "https://gtfsrt.api.translink.com.au/GTFS/SEQ_GTFS.zip",
+    "bbox": [152.1, -28.2, 153.55, -26.15]
+  },
+  {
+    "id": "adelaide-metro",
+    "name": "Adelaide Metro",
+    "vehicleUrl": "https://gtfs.adelaidemetro.com.au/v1/realtime/vehicle_positions",
+    "alertUrl": "https://gtfs.adelaidemetro.com.au/v1/realtime/service_alerts",
+    "staticGtfsUrl": "https://gtfs.adelaidemetro.com.au/v1/static/latest/google_transit.zip",
+    "bbox": [138.4, -35.35, 139.05, -34.55]
+  }
+]
